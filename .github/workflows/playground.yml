@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/**'
       - 'playground/**'
+      - 'tests/fixtures/**'
       - 'Cargo.toml'
 
 permissions:
@@ -37,6 +38,100 @@ jobs:
       - run: |
           cp pkg/ironpress.js playground/
           cp pkg/ironpress_bg.wasm playground/
+
+      # Generate parity comparison images for the dashboard
+      - name: Install parity dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils imagemagick
+
+      - name: Build ironpress release
+        run: cargo build --release
+
+      - name: Render fixtures to PDF
+        run: bash scripts/render-fixtures.sh /tmp/parity-pdfs
+
+      - name: Generate Chromium reference PNGs
+        run: bash scripts/generate-references.sh
+
+      - name: Generate comparison images
+        run: |
+          mkdir -p playground/parity/images
+          REFS_DIR=tests/fixtures/references
+          for layer in features combined edge-cases; do
+            mkdir -p playground/parity/images/$layer
+            for ref_png in "$REFS_DIR/$layer"/*.png; do
+              [ -f "$ref_png" ] || continue
+              name=$(basename "$ref_png" .png)
+              pdf_file="/tmp/parity-pdfs/$layer/$name.pdf"
+              [ -f "$pdf_file" ] || continue
+
+              # Convert ironpress PDF page 1 to PNG
+              pdftoppm -r 150 -png -f 1 -l 1 "$pdf_file" "/tmp/ironpress_${name}" 2>/dev/null
+              iron_png=""
+              for c in "/tmp/ironpress_${name}-1.png" "/tmp/ironpress_${name}-01.png" "/tmp/ironpress_${name}-001.png"; do
+                [ -f "$c" ] && iron_png="$c" && break
+              done
+              [ -z "$iron_png" ] && continue
+
+              # Resize to match reference
+              ref_dims=$(identify -format "%wx%h" "$ref_png" 2>/dev/null || echo "")
+              [ -n "$ref_dims" ] && convert "$iron_png" -resize "$ref_dims!" "$iron_png" 2>/dev/null
+
+              # Copy reference and ironpress renders
+              cp "$ref_png" "playground/parity/images/$layer/${name}_chromium.png"
+              cp "$iron_png" "playground/parity/images/$layer/${name}_ironpress.png"
+
+              # Generate diff image (red highlights)
+              compare "$ref_png" "$iron_png" -compose src -highlight-color red -lowlight-color white \
+                "playground/parity/images/$layer/${name}_diff.png" 2>/dev/null || \
+              convert -size $(identify -format "%wx%h" "$ref_png") xc:gray \
+                "playground/parity/images/$layer/${name}_diff.png" 2>/dev/null
+            done
+          done
+
+      - name: Inject parity data into dashboard
+        run: |
+          # Build JSON results from the generated images
+          node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const results = {};
+          const imgDir = 'playground/parity/images';
+          for (const layer of ['features', 'combined', 'edge-cases']) {
+            const dir = path.join(imgDir, layer);
+            if (!fs.existsSync(dir)) continue;
+            const files = fs.readdirSync(dir).filter(f => f.endsWith('_chromium.png'));
+            for (const f of files) {
+              const name = f.replace('_chromium.png', '');
+              const key = layer + '/' + name;
+              results[key] = {
+                chromium_img: 'images/' + layer + '/' + name + '_chromium.png',
+                ironpress_img: 'images/' + layer + '/' + name + '_ironpress.png',
+                diff_img: 'images/' + layer + '/' + name + '_diff.png',
+              };
+            }
+          }
+          // Read expectations for visual_assertions
+          const expDir = 'tests/fixtures/expectations';
+          if (fs.existsSync(expDir)) {
+            for (const f of fs.readdirSync(expDir)) {
+              if (!f.endsWith('.json')) continue;
+              const exp = JSON.parse(fs.readFileSync(path.join(expDir, f), 'utf8'));
+              const key = exp.layer + '/' + exp.fixture;
+              if (results[key] && exp.visual_assertions) {
+                results[key].visual_assertions = exp.visual_assertions;
+              }
+            }
+          }
+          // Inject into HTML
+          const html = fs.readFileSync('playground/parity/index.html', 'utf8');
+          const injected = html.replace(
+            /\/\/ <!-- PARITY_DATA_START -->[\s\S]*?\/\/ <!-- PARITY_DATA_END -->/,
+            '// <!-- PARITY_DATA_START -->\nconst RESULTS = ' + JSON.stringify(results, null, 2) + ';\n// <!-- PARITY_DATA_END -->'
+          );
+          fs.writeFileSync('playground/parity/index.html', injected);
+          console.log('Injected', Object.keys(results).length, 'fixtures into dashboard');
+          "
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
