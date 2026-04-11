@@ -215,8 +215,7 @@ pub(crate) fn load_unicode_fallback_font(fonts: &mut HashMap<String, TtfFont>) {
 
     for family in UNICODE_FALLBACK_FAMILIES {
         let query = SystemFontQuery::new(family, FontVariant::new(false, false));
-        if let Some(font) = query_fontdb_font(&db, &query)
-            .or_else(|| query_fontconfig_font(&query))
+        if let Some(font) = query_fontdb_font(&db, &query).or_else(|| query_fontconfig_font(&query))
         {
             fonts.insert(UNICODE_FALLBACK_KEY.to_string(), font);
             return;
@@ -720,5 +719,56 @@ mod tests {
             &query,
             "DejaVu Sans,DejaVu Sans Condensed"
         ));
+    }
+
+    // ── load_unicode_fallback_font ──────────────────────────────────────────
+
+    #[test]
+    fn unicode_fallback_key_is_dunder_prefixed() {
+        assert!(UNICODE_FALLBACK_KEY.starts_with("__"));
+    }
+
+    #[test]
+    fn load_unicode_fallback_font_does_not_panic() {
+        let mut fonts = HashMap::new();
+        // Should not panic regardless of which system fonts are installed.
+        load_unicode_fallback_font(&mut fonts);
+    }
+
+    #[test]
+    fn load_unicode_fallback_font_is_idempotent() {
+        let mut fonts = HashMap::new();
+        load_unicode_fallback_font(&mut fonts);
+        let count_after_first = fonts.len();
+        load_unicode_fallback_font(&mut fonts);
+        assert_eq!(
+            fonts.len(),
+            count_after_first,
+            "calling load_unicode_fallback_font twice should not add a second entry"
+        );
+    }
+
+    #[test]
+    fn load_unicode_fallback_font_skips_when_key_already_present() {
+        let mut fonts = HashMap::new();
+        let sentinel = stub_font("Sentinel");
+        fonts.insert(UNICODE_FALLBACK_KEY.to_string(), sentinel);
+        load_unicode_fallback_font(&mut fonts);
+        // The sentinel font should remain unchanged.
+        assert_eq!(
+            fonts.get(UNICODE_FALLBACK_KEY).unwrap().font_name,
+            "Sentinel"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn load_unicode_fallback_font_loads_a_font_on_macos() {
+        let mut fonts = HashMap::new();
+        load_unicode_fallback_font(&mut fonts);
+        assert!(
+            fonts.contains_key(UNICODE_FALLBACK_KEY),
+            "macOS should have at least one of the candidate Unicode fallback fonts"
+        );
     }
 }

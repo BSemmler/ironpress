@@ -2560,7 +2560,7 @@ pub(crate) fn utf8_to_winansi(text: &str) -> Vec<u8> {
 /// cannot be rendered by the standard PDF fonts and require a Unicode-capable
 /// embedded font instead.
 pub(crate) fn is_winansi_encodable(text: &str) -> bool {
-    text.chars().all(|ch| is_winansi_char(ch))
+    text.chars().all(is_winansi_char)
 }
 
 /// Check whether a single character is representable in WinAnsiEncoding.

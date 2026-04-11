@@ -31,6 +31,7 @@ pub(super) struct PageRenderContext<'a> {
 }
 
 impl<'a> PageRenderContext<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         pdf_writer: &'a mut PdfWriter,
         page_images: &'a mut Vec<ImageRef>,

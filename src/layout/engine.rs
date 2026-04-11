@@ -1633,15 +1633,13 @@ fn flatten_element(
             "\u{25B6} Audio".to_string()
         };
 
-        let bg =
-            style
-                .background_color
-                .map(|c| c.to_f32_rgba())
-                .unwrap_or(if el.tag == HtmlTag::Video {
-                    (0.0, 0.0, 0.0, 1.0)
-                } else {
-                    (0.94, 0.94, 0.94, 1.0)
-                });
+        let bg = style.background_color.map(|c| c.to_f32_rgba()).unwrap_or(
+            if el.tag == HtmlTag::Video {
+                (0.0, 0.0, 0.0, 1.0)
+            } else {
+                (0.94, 0.94, 0.94, 1.0)
+            },
+        );
         let text_color = if el.tag == HtmlTag::Video {
             (1.0, 1.0, 1.0)
         } else {
@@ -5291,7 +5289,9 @@ impl<'a> FlexTextRunCollector<'a> {
                                 color: parent_style.color.to_f32_rgb(),
                                 link_url: link_url.map(String::from),
                                 font_family: resolve_style_font_family(parent_style, self.fonts),
-                                background_color: parent_style.background_color.map(|c| c.to_f32_rgba()),
+                                background_color: parent_style
+                                    .background_color
+                                    .map(|c| c.to_f32_rgba()),
                                 padding: text_padding,
                                 border_radius: 0.0,
                             },
@@ -5411,9 +5411,7 @@ fn push_text_run_with_fallback(
     );
 
     // If using a custom font or there's no fallback loaded, push as-is.
-    if !is_standard_font
-        || !fonts.contains_key(crate::system_fonts::UNICODE_FALLBACK_KEY)
-    {
+    if !is_standard_font || !fonts.contains_key(crate::system_fonts::UNICODE_FALLBACK_KEY) {
         runs.push(run);
         return;
     }
@@ -5425,8 +5423,7 @@ fn push_text_run_with_fallback(
     }
 
     // Split text into contiguous segments of WinAnsi / non-WinAnsi characters.
-    let fallback_family =
-        FontFamily::Custom(crate::system_fonts::UNICODE_FALLBACK_KEY.to_string());
+    let fallback_family = FontFamily::Custom(crate::system_fonts::UNICODE_FALLBACK_KEY.to_string());
     let mut current = String::new();
     let mut current_is_winansi = true;
 
@@ -14216,5 +14213,185 @@ mod _removed {
             grid_rows.is_empty(),
             "column-count: 1 should not produce grid rows"
         );
+    }
+
+    // ── push_text_run_with_fallback ─────────────────────────────────────────
+
+    fn make_stub_font(name: &str) -> crate::parser::ttf::TtfFont {
+        use crate::parser::ttf::{FontVerticalMetrics, TtfFont};
+        TtfFont {
+            font_name: name.to_string(),
+            units_per_em: 1000,
+            bbox: [0, -200, 1000, 800],
+            pdf_metrics: FontVerticalMetrics::new(800, -200, 0),
+            layout_metrics: FontVerticalMetrics::new(800, -200, 0),
+            cmap: std::collections::HashMap::new(),
+            glyph_widths: vec![500],
+            num_h_metrics: 1,
+            flags: 0,
+            data: vec![],
+        }
+    }
+
+    fn base_text_run(text: &str, family: FontFamily) -> TextRun {
+        TextRun {
+            text: text.to_string(),
+            font_size: 12.0,
+            bold: false,
+            italic: false,
+            underline: false,
+            line_through: false,
+            color: (0.0, 0.0, 0.0),
+            link_url: None,
+            font_family: family,
+            background_color: None,
+            padding: (0.0, 0.0),
+            border_radius: 0.0,
+        }
+    }
+
+    #[test]
+    fn fallback_ascii_only_stays_single_run() {
+        let mut fonts = HashMap::new();
+        fonts.insert(
+            crate::system_fonts::UNICODE_FALLBACK_KEY.to_string(),
+            make_stub_font("Fallback"),
+        );
+        let run = base_text_run("Hello world", FontFamily::Helvetica);
+        let mut runs = Vec::new();
+        push_text_run_with_fallback(run, &mut runs, &fonts);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].font_family, FontFamily::Helvetica);
+    }
+
+    #[test]
+    fn fallback_cjk_only_uses_fallback_font() {
+        let mut fonts = HashMap::new();
+        fonts.insert(
+            crate::system_fonts::UNICODE_FALLBACK_KEY.to_string(),
+            make_stub_font("Fallback"),
+        );
+        let run = base_text_run("\u{4F60}\u{597D}", FontFamily::Helvetica); // 你好
+        let mut runs = Vec::new();
+        push_text_run_with_fallback(run, &mut runs, &fonts);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].font_family,
+            FontFamily::Custom(crate::system_fonts::UNICODE_FALLBACK_KEY.to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_mixed_ascii_cjk_splits_into_segments() {
+        let mut fonts = HashMap::new();
+        fonts.insert(
+            crate::system_fonts::UNICODE_FALLBACK_KEY.to_string(),
+            make_stub_font("Fallback"),
+        );
+        // "Hello你好World"
+        let run = base_text_run("Hello\u{4F60}\u{597D}World", FontFamily::Helvetica);
+        let mut runs = Vec::new();
+        push_text_run_with_fallback(run, &mut runs, &fonts);
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].text, "Hello");
+        assert_eq!(runs[0].font_family, FontFamily::Helvetica);
+        assert_eq!(runs[1].text, "\u{4F60}\u{597D}");
+        assert_eq!(
+            runs[1].font_family,
+            FontFamily::Custom(crate::system_fonts::UNICODE_FALLBACK_KEY.to_string())
+        );
+        assert_eq!(runs[2].text, "World");
+        assert_eq!(runs[2].font_family, FontFamily::Helvetica);
+    }
+
+    #[test]
+    fn fallback_custom_font_not_split() {
+        let mut fonts = HashMap::new();
+        fonts.insert(
+            crate::system_fonts::UNICODE_FALLBACK_KEY.to_string(),
+            make_stub_font("Fallback"),
+        );
+        // Custom fonts handle their own glyph encoding; no splitting.
+        let run = base_text_run(
+            "Hello\u{4F60}\u{597D}",
+            FontFamily::Custom("MyFont".to_string()),
+        );
+        let mut runs = Vec::new();
+        push_text_run_with_fallback(run, &mut runs, &fonts);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].font_family,
+            FontFamily::Custom("MyFont".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_no_fallback_font_loaded_passes_through() {
+        let fonts = HashMap::new(); // no fallback loaded
+        let run = base_text_run("Hello\u{4F60}\u{597D}", FontFamily::Helvetica);
+        let mut runs = Vec::new();
+        push_text_run_with_fallback(run, &mut runs, &fonts);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].font_family, FontFamily::Helvetica);
+    }
+
+    #[test]
+    fn fallback_times_roman_also_splits() {
+        let mut fonts = HashMap::new();
+        fonts.insert(
+            crate::system_fonts::UNICODE_FALLBACK_KEY.to_string(),
+            make_stub_font("Fallback"),
+        );
+        let run = base_text_run("A\u{4E16}", FontFamily::TimesRoman); // A世
+        let mut runs = Vec::new();
+        push_text_run_with_fallback(run, &mut runs, &fonts);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].font_family, FontFamily::TimesRoman);
+        assert_eq!(
+            runs[1].font_family,
+            FontFamily::Custom(crate::system_fonts::UNICODE_FALLBACK_KEY.to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_courier_also_splits() {
+        let mut fonts = HashMap::new();
+        fonts.insert(
+            crate::system_fonts::UNICODE_FALLBACK_KEY.to_string(),
+            make_stub_font("Fallback"),
+        );
+        let run = base_text_run("X\u{3042}", FontFamily::Courier); // Xあ
+        let mut runs = Vec::new();
+        push_text_run_with_fallback(run, &mut runs, &fonts);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].font_family, FontFamily::Courier);
+        assert_eq!(
+            runs[1].font_family,
+            FontFamily::Custom(crate::system_fonts::UNICODE_FALLBACK_KEY.to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_preserves_run_style_properties() {
+        let mut fonts = HashMap::new();
+        fonts.insert(
+            crate::system_fonts::UNICODE_FALLBACK_KEY.to_string(),
+            make_stub_font("Fallback"),
+        );
+        let mut run = base_text_run("A\u{4E16}", FontFamily::Helvetica);
+        run.bold = true;
+        run.italic = true;
+        run.font_size = 24.0;
+        run.color = (1.0, 0.0, 0.0);
+        let mut runs = Vec::new();
+        push_text_run_with_fallback(run, &mut runs, &fonts);
+        assert_eq!(runs.len(), 2);
+        // Both segments should preserve the style properties.
+        for r in &runs {
+            assert!(r.bold);
+            assert!(r.italic);
+            assert_eq!(r.font_size, 24.0);
+            assert_eq!(r.color, (1.0, 0.0, 0.0));
+        }
     }
 }
