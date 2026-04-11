@@ -1,6 +1,6 @@
 use crate::parser::css::{CssRule, CssValue, parse_inline_style};
 use crate::parser::dom::DomNode;
-use crate::parser::ttf::{TtfFont, parse_ttf};
+use crate::parser::ttf::{TtfFont, parse_ttf, parse_ttf_with_index};
 use crate::style::computed::{FontFamily, FontStack, parse_font_stack};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
@@ -183,6 +183,55 @@ pub(crate) fn resolve_font_family(
         .unwrap_or_default()
 }
 
+/// Key used to store the Unicode fallback font in the font map.
+pub(crate) const UNICODE_FALLBACK_KEY: &str = "__unicode_fallback";
+
+/// Candidate font families to try when looking for a Unicode fallback font.
+/// Ordered by breadth of Unicode coverage (CJK, symbols, etc.).
+/// Includes macOS-specific CJK fonts (Hiragino, PingFang, STHeiti) alongside
+/// cross-platform options (Noto Sans CJK, Arial Unicode MS, DejaVu Sans).
+const UNICODE_FALLBACK_FAMILIES: &[&str] = &[
+    "Noto Sans CJK SC",
+    "Noto Sans CJK",
+    "Noto Sans SC",
+    "Arial Unicode MS",
+    // macOS CJK fonts
+    "Hiragino Sans",
+    "Hiragino Kaku Gothic Pro",
+    "PingFang SC",
+    "Heiti SC",
+    "STHeiti",
+    // Linux / cross-platform
+    "Noto Sans",
+    "DejaVu Sans",
+    "Liberation Sans",
+    "FreeSans",
+];
+
+/// Load a single Unicode-capable fallback font for characters outside
+/// WinAnsiEncoding.  The font is registered under [`UNICODE_FALLBACK_KEY`].
+///
+/// This enables CJK and other non-Latin characters to render correctly
+/// instead of appearing as rectangles/tofu when the document uses a
+/// standard PDF font (Helvetica, Times-Roman, Courier).
+pub(crate) fn load_unicode_fallback_font(fonts: &mut HashMap<String, TtfFont>) {
+    if fonts.contains_key(UNICODE_FALLBACK_KEY) {
+        return;
+    }
+
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+
+    for family in UNICODE_FALLBACK_FAMILIES {
+        let query = SystemFontQuery::new(family, FontVariant::new(false, false));
+        if let Some(font) = query_fontdb_font(&db, &query).or_else(|| query_fontconfig_font(&query))
+        {
+            fonts.insert(UNICODE_FALLBACK_KEY.to_string(), font);
+            return;
+        }
+    }
+}
+
 pub(crate) fn load_requested_system_fonts(
     nodes: &[DomNode],
     rules: &[CssRule],
@@ -353,7 +402,9 @@ fn query_fontdb_font(db: &fontdb::Database, query: &SystemFontQuery<'_>) -> Opti
         stretch: fontdb::Stretch::Normal,
         style: query.variant.style(),
     })?;
-    db.with_face_data(face_id, |data, _face_index| parse_ttf(data.to_vec()).ok())?
+    db.with_face_data(face_id, |data, face_index| {
+        parse_ttf_with_index(data.to_vec(), face_index as usize).ok()
+    })?
 }
 
 #[cfg(test)]
@@ -679,5 +730,56 @@ mod tests {
             &query,
             "DejaVu Sans,DejaVu Sans Condensed"
         ));
+    }
+
+    // ── load_unicode_fallback_font ──────────────────────────────────────────
+
+    #[test]
+    fn unicode_fallback_key_is_dunder_prefixed() {
+        assert!(UNICODE_FALLBACK_KEY.starts_with("__"));
+    }
+
+    #[test]
+    fn load_unicode_fallback_font_does_not_panic() {
+        let mut fonts = HashMap::new();
+        // Should not panic regardless of which system fonts are installed.
+        load_unicode_fallback_font(&mut fonts);
+    }
+
+    #[test]
+    fn load_unicode_fallback_font_is_idempotent() {
+        let mut fonts = HashMap::new();
+        load_unicode_fallback_font(&mut fonts);
+        let count_after_first = fonts.len();
+        load_unicode_fallback_font(&mut fonts);
+        assert_eq!(
+            fonts.len(),
+            count_after_first,
+            "calling load_unicode_fallback_font twice should not add a second entry"
+        );
+    }
+
+    #[test]
+    fn load_unicode_fallback_font_skips_when_key_already_present() {
+        let mut fonts = HashMap::new();
+        let sentinel = stub_font("Sentinel");
+        fonts.insert(UNICODE_FALLBACK_KEY.to_string(), sentinel);
+        load_unicode_fallback_font(&mut fonts);
+        // The sentinel font should remain unchanged.
+        assert_eq!(
+            fonts.get(UNICODE_FALLBACK_KEY).unwrap().font_name,
+            "Sentinel"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn load_unicode_fallback_font_loads_a_font_on_macos() {
+        let mut fonts = HashMap::new();
+        load_unicode_fallback_font(&mut fonts);
+        assert!(
+            fonts.contains_key(UNICODE_FALLBACK_KEY),
+            "macOS should have at least one of the candidate Unicode fallback fonts"
+        );
     }
 }
