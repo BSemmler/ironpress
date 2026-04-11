@@ -274,8 +274,8 @@ Layout follows TeX conventions: 4 style levels (display, text, script, scriptscr
 | Category | Properties |
 |----------|-----------|
 | Typography | `font-size`, `font-weight`, `font-style`, `font-family`, `letter-spacing`, `word-spacing`, `text-indent`, `text-transform`, `white-space`, `vertical-align`, `text-overflow`, `overflow-wrap` |
-| Colors | `color`, `background-color`, `opacity` |
-| Box model | `margin` (including `auto`), `padding`, `border`, `border-top/right/bottom/left`, `border-width`, `border-color`, `border-radius`, `outline`, `outline-width`, `outline-color`, `box-sizing`, `width`, `height`, `min-width`, `min-height`, `max-width`, `max-height` |
+| Colors | `color`, `background-color`, `rgba()` with transparency, `opacity` |
+| Box model | `margin` (including `auto`), `padding`, `border`, `border-top/right/bottom/left`, `border-width`, `border-style` (solid, dashed, dotted), `border-color`, `border-radius`, `outline`, `outline-width`, `outline-color`, `box-sizing`, `width`, `height`, `min-width`, `min-height`, `max-width`, `max-height` |
 | Layout | `text-align` (left, center, right, justify), `line-height`, `display` (none, block, inline, flex, grid), `float` (left, right), `clear`, `position` (static, relative, absolute), `z-index` |
 | Flexbox | `flex-direction`, `justify-content`, `align-items`, `flex-wrap`, `flex-grow`, `flex-shrink`, `flex-basis`, `flex` (shorthand), `gap` |
 | Grid | `grid-template-columns` (fixed, `fr`, `auto`, `repeat()`, `minmax()`, `auto-fill`, `auto-fit`), `grid-gap` |
@@ -613,7 +613,8 @@ Three functions are exported: `htmlToPdf(html)`, `markdownToPdf(md)`, and `htmlT
 
 ironpress uses three layers of testing:
 
-- **Unit tests**: 1740+ tests covering parsing, style computation, layout, rendering, and CLI
+- **Unit tests**: 2060+ tests covering parsing, style computation, layout, rendering, and CLI
+- **Parity tests**: 24 HTML fixtures compared against Chromium rendering ([dashboard](https://gastongouron.github.io/ironpress/parity/))
 - **Property-based tests**: [proptest](https://crates.io/crates/proptest) verifies invariants across thousands of random inputs (no panics on arbitrary HTML/CSS/Markdown, valid PDF output, correct page structure)
 - **Fuzz targets**: 6 [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html) targets — HTML parser, CSS parser, Markdown parser, full pipeline, SVG, and table/flex layout (`cargo +nightly fuzz run fuzz_html`). All targets run in CI on every push.
 
