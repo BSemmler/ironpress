@@ -3137,10 +3137,12 @@ fn flatten_flex_container(
         }
 
         // Determine child width: flex-basis takes priority, then explicit width.
-        // If neither is set and flex-grow > 0, use 0 as base (grow will distribute).
-        // If neither is set and flex-grow == 0 (default), use natural content width
-        // so items shrink to fit their content and justify-content can distribute
-        // the remaining free space.
+        // Flex base size for grow/shrink distribution:
+        // - With flex-basis or width: use that value
+        // - flex-grow > 0 without basis/width: use 0 so all space is distributed
+        //   proportionally by grow factors
+        // - flex-grow == 0 without basis/width: use equal share, then shrink to
+        //   natural content width (for justify-content)
         let has_explicit_width = child_style.flex_basis.is_some() || child_style.width.is_some();
         let child_w_initial = child_style
             .flex_basis
@@ -3149,11 +3151,17 @@ fn flatten_flex_container(
                 if child_style.flex_grow > 0.0 {
                     0.0
                 } else {
-                    // Use full width initially for text wrapping measurement;
-                    // we will shrink to natural content width below.
                     width_for_percentages / child_count as f32
                 }
             });
+        // For text wrapping, use equal share as measurement width even when
+        // flex base is 0 — text needs a nonzero width to wrap into lines.
+        // The actual item width will be set after grow distribution.
+        let wrap_width = if child_w_initial < 1.0 && child_style.flex_grow > 0.0 {
+            width_for_percentages / child_count as f32
+        } else {
+            child_w_initial
+        };
 
         // Collect text runs for this child, including from nested block elements.
         // Include the child element itself in the ancestor chain so that
@@ -3195,13 +3203,19 @@ fn flatten_flex_container(
             child_w_initial
         };
 
-        let child_inner_w = if child_style.box_sizing == BoxSizing::BorderBox {
+        // Use wrap_width for text measurement (nonzero even when flex base is 0)
+        let wrap_w = if child_style.flex_grow > 0.0 && !has_explicit_width {
+            wrap_width
+        } else {
             child_w
+        };
+        let child_inner_w = if child_style.box_sizing == BoxSizing::BorderBox {
+            wrap_w
                 - child_style.padding.left
                 - child_style.padding.right
                 - child_style.border.horizontal_width()
         } else {
-            child_w - child_style.padding.left - child_style.padding.right
+            wrap_w - child_style.padding.left - child_style.padding.right
         }
         .max(0.0);
 
