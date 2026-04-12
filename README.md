@@ -1,4 +1,6 @@
-<img width="2480" height="1333" alt="ironpress-logo" src="https://github.com/user-attachments/assets/f55ff64e-c77e-459e-8051-de0397b35735" />
+# ironpress
+
+<img width="2480" height="1333" alt="4" src="https://github.com/user-attachments/assets/16de3c7d-487e-45d0-9f97-ef46ff882df4" />
 
 [![Crates.io](https://img.shields.io/crates/v/ironpress.svg)](https://crates.io/crates/ironpress)
 [![npm](https://img.shields.io/npm/v/ironpress.svg)](https://www.npmjs.com/package/ironpress)
