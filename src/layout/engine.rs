@@ -3870,17 +3870,10 @@ fn flatten_flex_container(
         // Determine child width early so complex items can use it for layout.
         // For flex-grow items without explicit width, use equal share as initial estimate.
         // The actual width will be adjusted after grow distribution.
-        let child_w_for_layout =
-            child_style
-                .flex_basis
-                .or(child_style.width)
-                .unwrap_or_else(|| {
-                    if child_style.flex_grow > 0.0 {
-                        width_for_percentages / child_count as f32
-                    } else {
-                        width_for_percentages / child_count as f32
-                    }
-                });
+        let child_w_for_layout = child_style
+            .flex_basis
+            .or(child_style.width)
+            .unwrap_or(width_for_percentages / child_count as f32);
 
         // Check if this flex item has block-level children that need full layout
         let item_has_block_children = child_el.children.iter().any(|c| {
@@ -7041,8 +7034,8 @@ fn patch_absolute_children_containing_block(elements: &mut [LayoutElement], cb: 
             lines,
             padding_top,
             padding_bottom,
-            padding_left,
-            padding_right,
+            padding_left: _,
+            padding_right: _,
             border,
             ..
         } = element
