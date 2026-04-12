@@ -12,6 +12,7 @@ use crate::types::{Color, EdgeSizes};
 pub enum Display {
     Block,
     Inline,
+    InlineBlock,
     Flex,
     Grid,
     None,
@@ -1483,6 +1484,7 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
         style.display = match k.as_str() {
             "none" => Display::None,
             "inline" => Display::Inline,
+            "inline-block" => Display::InlineBlock,
             "block" => Display::Block,
             "flex" => Display::Flex,
             "grid" => Display::Grid,
@@ -2265,6 +2267,7 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
             style.display = match kw.as_str() {
                 "none" => Display::None,
                 "inline" => Display::Inline,
+                "inline-block" => Display::InlineBlock,
                 "block" => Display::Block,
                 "flex" => Display::Flex,
                 "grid" => Display::Grid,
