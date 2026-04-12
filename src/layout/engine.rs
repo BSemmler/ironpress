@@ -147,11 +147,8 @@ fn element_is_inline_block(
         &el.attributes,
         &selector_ctx,
     );
-    // SVGs, elements with transforms, and elements with blur filters
-    // need individual block layout — FlexCell doesn't support these yet.
+    // SVGs need individual block layout (they use cm operator for viewBox).
     style.display == Display::InlineBlock
-        && style.transform.is_none()
-        && style.blur_radius == 0.0
         && el.tag != HtmlTag::Svg
         && !el
             .children
@@ -191,6 +188,7 @@ fn flush_inline_block_group(
         padding_bottom: f32,
         padding_left: f32,
         border_radius: f32,
+        transform: Option<Transform>,
         background_gradient: Option<LinearGradient>,
         background_radial_gradient: Option<RadialGradient>,
         background_svg: Option<crate::parser::svg::SvgTree>,
@@ -341,6 +339,7 @@ fn flush_inline_block_group(
             padding_bottom: child_style.padding.bottom,
             padding_left: child_style.padding.left,
             border_radius: child_style.border_radius,
+            transform: child_style.transform,
             background_gradient: bg_fields.gradient,
             background_radial_gradient: bg_fields.radial_gradient,
             background_svg: bg_fields.svg,
@@ -394,6 +393,7 @@ fn flush_inline_block_group(
             background_position: item.background_position,
             background_repeat: item.background_repeat,
             background_origin: item.background_origin,
+            transform: item.transform,
             nested_elements: Vec::new(),
         });
         x += item.width + item.margin_right;
@@ -995,6 +995,7 @@ pub struct FlexCell {
     pub background_position: BackgroundPosition,
     pub background_repeat: BackgroundRepeat,
     pub background_origin: BackgroundOrigin,
+    pub transform: Option<Transform>,
     /// Nested layout elements for complex flex items (tables, images, etc.)
     pub nested_elements: Vec<LayoutElement>,
 }
@@ -3422,9 +3423,18 @@ fn flatten_element(
                 }
             }
             output.extend(child_elements);
-            // Emit spacer for bottom padding + border + margin_bottom
-            let bottom_space =
-                style.padding.bottom + style.border.vertical_width() + style.margin.bottom;
+            // Emit spacer for bottom padding + border + margin_bottom.
+            // When specified height > children height, add the remaining
+            // space so the flow advances past the full container height.
+            let remaining_height = if effective_height.is_some() {
+                (container_h - style.padding.top - children_h).max(0.0)
+            } else {
+                0.0
+            };
+            let bottom_space = remaining_height
+                + style.padding.bottom
+                + style.border.vertical_width()
+                + style.margin.bottom;
             if bottom_space > 0.0 {
                 output.push(LayoutElement::TextBlock {
                     lines: Vec::new(),
@@ -4463,6 +4473,7 @@ fn flatten_flex_container(
                                 background_position: BackgroundPosition::default(),
                                 background_repeat: BackgroundRepeat::Repeat,
                                 background_origin: BackgroundOrigin::Padding,
+                                transform: None,
                                 nested_elements: item.elements.clone(),
                             });
                             x += item.width + gap;
@@ -4520,6 +4531,7 @@ fn flatten_flex_container(
                             background_position: BackgroundPosition::default(),
                             background_repeat: BackgroundRepeat::Repeat,
                             background_origin: BackgroundOrigin::Padding,
+                            transform: None,
                             nested_elements: Vec::new(),
                         });
                         x += item.width + gap;
@@ -4566,6 +4578,7 @@ fn flatten_flex_container(
                             background_position: *tb_bg_pos,
                             background_repeat: *tb_bg_repeat,
                             background_origin: *tb_bg_origin,
+                            transform: None,
                             nested_elements: Vec::new(),
                         });
                     }

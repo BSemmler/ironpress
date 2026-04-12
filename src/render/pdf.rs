@@ -1345,6 +1345,35 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         let cell_x = margin.left + padding_left + cell.x_offset;
                         let cell_inner_w = cell.width - cell.padding_left - cell.padding_right;
 
+                        // Apply cell transform if set (rotate, scale, translate)
+                        let cell_needs_transform = cell.transform.is_some();
+                        if let Some(t) = &cell.transform {
+                            let cx = cell_x + cell.width * 0.5;
+                            let cy = text_area_top - *row_height * 0.5;
+                            content.push_str("q\n");
+                            match t {
+                                crate::style::computed::Transform::Rotate(deg) => {
+                                    let rad = deg * std::f32::consts::PI / 180.0;
+                                    let cos_v = rad.cos();
+                                    let sin_v = rad.sin();
+                                    let tx = cx - cx * cos_v + cy * sin_v;
+                                    let ty = cy - cx * sin_v - cy * cos_v;
+                                    content.push_str(&format!(
+                                        "{cos_v} {sin_v} {} {cos_v} {tx} {ty} cm\n",
+                                        -sin_v,
+                                    ));
+                                }
+                                crate::style::computed::Transform::Scale(sx, sy) => {
+                                    let tx = cx - cx * sx;
+                                    let ty = cy - cy * sy;
+                                    content.push_str(&format!("{sx} 0 0 {sy} {tx} {ty} cm\n"));
+                                }
+                                crate::style::computed::Transform::Translate(dx, dy) => {
+                                    content.push_str(&format!("1 0 0 1 {dx} {} cm\n", -dy));
+                                }
+                            }
+                        }
+
                         // Draw cell background
                         if let Some((r, g, b, a)) = cell.background_color {
                             let bg_x = margin.left + padding_left + cell.x_offset;
@@ -1737,6 +1766,11 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                     _ => {}
                                 }
                             }
+                        }
+
+                        // Restore cell transform
+                        if cell_needs_transform {
+                            content.push_str("Q\n");
                         }
                     }
                 }
