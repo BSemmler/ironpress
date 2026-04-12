@@ -3346,14 +3346,14 @@ fn flatten_element(
                 counter_state,
             );
             // Pull y back so children flow inside the wrapper, starting
-            // after the top padding.  The wrapper advanced y by its full
-            // height; we only pull back by (children_h + padding_bottom + border)
-            // so that padding_top of space remains above the children.
-            // For overflow:hidden, use container_h (specified height) not children_h,
-            // since the wrapper only advances y by container_h.
-            let pullback = if style.overflow == Overflow::Hidden && effective_height.is_some() {
+            // after the top padding.  The wrapper's block_height determines
+            // how much y advanced; pull back by (block_height - padding_top)
+            // so children start right after the top padding.
+            let pullback = if effective_height.is_some() {
+                // Specified height: pull back based on container_h
                 container_h - style.padding.top
             } else {
+                // Auto height: pull back based on content
                 children_h + style.padding.bottom + style.border.vertical_width()
             };
             output.push(LayoutElement::TextBlock {
