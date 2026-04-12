@@ -142,9 +142,16 @@ fn element_is_inline_block(
         &el.attributes,
         &selector_ctx,
     );
-    // Elements with transforms need individual block layout to preserve the
-    // `cm` operator in the PDF — FlexCell doesn't support transforms yet.
-    style.display == Display::InlineBlock && style.transform.is_none()
+    // SVGs, elements with transforms, and elements with blur filters
+    // need individual block layout — FlexCell doesn't support these yet.
+    style.display == Display::InlineBlock
+        && style.transform.is_none()
+        && style.blur_radius == 0.0
+        && el.tag != HtmlTag::Svg
+        && !el
+            .children
+            .iter()
+            .any(|c| matches!(c, DomNode::Element(e) if e.tag == HtmlTag::Svg))
 }
 
 /// Emit a `FlexRow` for a group of consecutive `display: inline-block` elements.
@@ -220,18 +227,24 @@ fn flush_inline_block_group(
         }
 
         // Determine the element width
+        let has_explicit_width = child_style.width.is_some();
         let child_w = child_style.width.unwrap_or(0.0);
         let child_h = child_style.height.unwrap_or(0.0);
 
-        let inner_width = if child_style.box_sizing == BoxSizing::BorderBox {
-            child_w
-                - child_style.padding.left
-                - child_style.padding.right
-                - child_style.border.horizontal_width()
+        let inner_width = if has_explicit_width {
+            if child_style.box_sizing == BoxSizing::BorderBox {
+                child_w
+                    - child_style.padding.left
+                    - child_style.padding.right
+                    - child_style.border.horizontal_width()
+            } else {
+                child_w
+            }
+            .max(0.0)
         } else {
-            child_w
+            // No explicit width: use available width for shrink-to-fit
+            available_width
         };
-        let inner_width = inner_width.max(0.0);
 
         // Collect text runs from the inline-block element's children
         let mut child_ancestors = ancestors.to_vec();
@@ -271,10 +284,26 @@ fn flush_inline_block_group(
         };
 
         // Total element width including padding + border
-        let total_w = if child_style.box_sizing == BoxSizing::BorderBox {
+        let content_w = if has_explicit_width {
             child_w
         } else {
-            child_w
+            // Shrink-to-fit: use the widest line
+            lines
+                .iter()
+                .map(|l| {
+                    l.runs
+                        .iter()
+                        .map(|r| {
+                            crate::fonts::str_width(&r.text, r.font_size, &r.font_family, r.bold)
+                        })
+                        .sum::<f32>()
+                })
+                .fold(0.0f32, f32::max)
+        };
+        let total_w = if child_style.box_sizing == BoxSizing::BorderBox && has_explicit_width {
+            content_w
+        } else {
+            content_w
                 + child_style.padding.left
                 + child_style.padding.right
                 + child_style.border.horizontal_width()
