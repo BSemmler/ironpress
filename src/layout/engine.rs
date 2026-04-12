@@ -3671,7 +3671,7 @@ fn flatten_element(
                 origin: background_origin,
             } = BackgroundFields::from_style(&style);
             // Resolve containing block and offsets for absolute elements
-            let (wrapper_cb, wrapper_top, wrapper_left) =
+            let (_wrapper_cb, wrapper_top, wrapper_left) =
                 resolve_abs_containing_block(&style, abs_containing_block, container_h, block_w);
             // Emit a Container element with true parent-child nesting.
             // The renderer draws background/border, then renders children inside.
