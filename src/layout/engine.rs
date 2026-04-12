@@ -2868,10 +2868,15 @@ fn flatten_element(
                         | HtmlTag::Table
                 )
             }
-            let has_block_children = el
-                .children
-                .iter()
-                .any(|c| matches!(c, DomNode::Element(e) if has_own_margins(e.tag)));
+            let parent_has_visual = has_background_paint(&style)
+                || style.border.has_any()
+                || style.border_radius > 0.0
+                || style.box_shadow.is_some();
+            let has_block_children = !parent_has_visual
+                && el
+                    .children
+                    .iter()
+                    .any(|c| matches!(c, DomNode::Element(e) if has_own_margins(e.tag)));
 
             if has_block_children {
                 // Mixed inline + block children: split at block boundaries
@@ -2956,22 +2961,12 @@ fn flatten_element(
                     output,
                     fonts,
                 );
-                // If the element has no visual properties (bg, border, shadow),
-                // we can return early. Otherwise fall through to needs_wrapper
-                // which emits a container TextBlock around the children.
-                let has_visual = has_background_paint(&style)
-                    || style.border.has_any()
-                    || style.border_radius > 0.0
-                    || style.box_shadow.is_some();
-                if !has_visual {
-                    if style.page_break_after {
-                        output.push(LayoutElement::PageBreak);
-                    }
-                    return;
+                // has_block_children is only true when !parent_has_visual,
+                // so we always return early here.
+                if style.page_break_after {
+                    output.push(LayoutElement::PageBreak);
                 }
-                // Clear runs so the normal path treats this as no-inline-content
-                // and enters the needs_wrapper branch for visual properties.
-                runs.clear();
+                return;
             } else {
                 collect_text_runs(
                     &el.children,
@@ -4497,7 +4492,7 @@ fn flatten_flex_container(
                                 opacity: *tb_op,
                                 float: Float::None,
                                 clear: Clear::None,
-                                position: if x_offset > 0.0 {
+                                position: if x_offset > 0.0 || style.padding.left > 0.0 {
                                     Position::Relative
                                 } else {
                                     *tb_pos
