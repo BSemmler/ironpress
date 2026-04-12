@@ -23,7 +23,8 @@
       "$1,365.00",
       "$116.03",
       "$1,481.03",
-      "billing@ironpress.dev"
+      "billing@ironpress.dev",
+      "IP"
     ],
     "min_size_bytes": 10000,
     "max_size_bytes": 500000,

@@ -2914,7 +2914,7 @@ fn flatten_element(
                             );
                         }
                         DomNode::Element(child_el)
-                            if child_el.tag.is_block()
+                            if (child_el.tag.is_block() || child_el.tag == HtmlTag::Svg)
                                 && !collects_as_inline_text(child_el.tag) =>
                         {
                             // Flush inline runs before block child

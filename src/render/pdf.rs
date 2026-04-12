@@ -1700,6 +1700,40 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                         }
                                         nested_y -= t_row_h;
                                     }
+                                    LayoutElement::Svg {
+                                        tree,
+                                        width: svg_w,
+                                        height: svg_h,
+                                        margin_top: svg_mt,
+                                        ..
+                                    } => {
+                                        nested_y -= svg_mt;
+                                        let svg_x = nested_x;
+                                        let svg_y = nested_y - svg_h;
+                                        content.push_str("q\n");
+                                        content.push_str(&format!(
+                                            "{svg_w} 0 0 {svg_h} {svg_x} {svg_y} cm\n"
+                                        ));
+                                        {
+                                            let mut image_sink = SvgPageImageSink {
+                                                pdf_writer: &mut pdf_writer,
+                                                page_images: &mut page_images,
+                                            };
+                                            let mut resources =
+                                                crate::render::svg_to_pdf::SvgPdfResources {
+                                                    shadings: &mut page_shadings,
+                                                    shading_counter: &mut shading_counter,
+                                                    image_sink: Some(&mut image_sink),
+                                                };
+                                            crate::render::svg_to_pdf::render_svg_tree_with_resources(
+                                                tree,
+                                                &mut content,
+                                                &mut resources,
+                                            );
+                                        }
+                                        content.push_str("Q\n");
+                                        nested_y -= svg_h;
+                                    }
                                     _ => {}
                                 }
                             }
