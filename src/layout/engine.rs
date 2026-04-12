@@ -4432,6 +4432,22 @@ fn flatten_flex_container(
                         let mut first_pr = 0.0f32;
                         let mut first_br = 0.0f32;
                         let mut is_first = true;
+                        // Check if all elements are TextBlocks (mergeable)
+                        let all_text_blocks = item
+                            .elements
+                            .iter()
+                            .all(|e| matches!(e, LayoutElement::TextBlock { .. }));
+
+                        if !all_text_blocks {
+                            // Mixed elements (e.g. TextBlock + TableRow):
+                            // emit them directly into output with position offset
+                            for elem in item.elements.clone() {
+                                output.push(elem);
+                            }
+                            x += item.width + gap;
+                            continue;
+                        }
+
                         for elem in &item.elements {
                             if let LayoutElement::TextBlock {
                                 lines: tb_lines,
