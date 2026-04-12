@@ -390,6 +390,7 @@ mod tests {
             repeat_on_each_page: false,
             positioned_depth: 0,
             heading_level: None,
+            clip_children_count: 0,
         }
     }
 
