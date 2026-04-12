@@ -142,7 +142,9 @@ fn element_is_inline_block(
         &el.attributes,
         &selector_ctx,
     );
-    style.display == Display::InlineBlock
+    // Elements with transforms need individual block layout to preserve the
+    // `cm` operator in the PDF — FlexCell doesn't support transforms yet.
+    style.display == Display::InlineBlock && style.transform.is_none()
 }
 
 /// Emit a `FlexRow` for a group of consecutive `display: inline-block` elements.
@@ -1419,6 +1421,7 @@ fn flatten_nodes(
 
     // Helper closure-like macro for flushing an inline-block group.
     // We use a nested fn instead since closures can't borrow multiple fields.
+    #[allow(clippy::drain_collect)]
     #[inline]
     fn flush_ib(
         group: &mut Vec<&ElementNode>,
@@ -3006,6 +3009,7 @@ fn flatten_element(
                     } else {
                         // Flush any pending inline-block group
                         if !ib_group_wrapper.is_empty() {
+                            #[allow(clippy::drain_collect)]
                             let taken: Vec<&ElementNode> = ib_group_wrapper.drain(..).collect();
                             flush_inline_block_group(
                                 &taken,
@@ -3045,6 +3049,7 @@ fn flatten_element(
             }
             // Flush remaining inline-block group
             if !ib_group_wrapper.is_empty() {
+                #[allow(clippy::drain_collect)]
                 let taken: Vec<&ElementNode> = ib_group_wrapper.drain(..).collect();
                 flush_inline_block_group(
                     &taken,
@@ -3317,6 +3322,7 @@ fn flatten_element(
                     } else {
                         // Flush any pending inline-block group
                         if !ib_group.is_empty() {
+                            #[allow(clippy::drain_collect)]
                             let taken: Vec<&ElementNode> = ib_group.drain(..).collect();
                             flush_inline_block_group(
                                 &taken,
@@ -3356,6 +3362,7 @@ fn flatten_element(
             }
             // Flush remaining inline-block group
             if !ib_group.is_empty() {
+                #[allow(clippy::drain_collect)]
                 let taken: Vec<&ElementNode> = ib_group.drain(..).collect();
                 flush_inline_block_group(
                     &taken,
