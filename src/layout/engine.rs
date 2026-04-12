@@ -89,12 +89,17 @@ fn resolve_padding_box_height(
     box_sizing: BoxSizing,
 ) -> f32 {
     let content_based_height = padding_top + content_height + padding_bottom;
-    let specified_padding_box_height = specified_height.map_or(0.0, |height| match box_sizing {
-        BoxSizing::BorderBox => (height - border_vertical).max(0.0),
-        BoxSizing::ContentBox => height + padding_top + padding_bottom,
-    });
-
-    content_based_height.max(specified_padding_box_height)
+    match specified_height {
+        Some(height) => {
+            // When height is explicitly set, use it (don't expand to fit content).
+            // This is essential for overflow: hidden to clip correctly.
+            match box_sizing {
+                BoxSizing::BorderBox => (height - border_vertical).max(0.0),
+                BoxSizing::ContentBox => height + padding_top + padding_bottom,
+            }
+        }
+        None => content_based_height,
+    }
 }
 
 fn advance_positioned_ancestors_after_page_break(
