@@ -60,6 +60,7 @@
       <option value="markdown">Markdown doc</option>
       <option value="math">Math paper</option>
       <option value="svg">SVG graphics</option>
+      <option value="unicode">Unicode & CJK</option>
     </select>
     <div class="spacer"></div>
     <span class="status" id="status">Loading WASM...</span>
@@ -283,7 +284,64 @@ svg: `<h1>SVG Graphics</h1>
 <p>SVG images embedded as data URIs are rendered as vector graphics:</p>
 <img src="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22200%22%20height%3D%2260%22%3E%3Crect%20width%3D%22200%22%20height%3D%2260%22%20rx%3D%228%22%20fill%3D%22%23333%22%2F%3E%3Ctext%20x%3D%22100%22%20y%3D%2236%22%20text-anchor%3D%22middle%22%20font-size%3D%2216%22%20fill%3D%22white%22%3ESVG%20Data%20URI%3C%2Ftext%3E%3C%2Fsvg%3E">
 
-<p style="font-size: 9pt; color: #999;">Generated with ironpress</p>`
+<p style="font-size: 9pt; color: #999;">Generated with ironpress</p>`,
+
+unicode: `<html>
+<head>
+<style>
+  body { font-family: sans-serif; margin: 40px; color: #1e293b; line-height: 1.8; }
+  h1 { font-size: 22px; margin-bottom: 16px; }
+  h2 { font-size: 16px; margin-top: 20px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  .sample { padding: 10px; margin-bottom: 10px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; }
+  .large { font-size: 20px; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 6px 12px; text-align: left; }
+  th { background-color: #f1f5f9; }
+</style>
+</head>
+<body>
+  <h1>Unicode & International Text</h1>
+
+  <h2>CJK Characters</h2>
+  <div class="sample large">
+    <p>Chinese: \u4F60\u597D\u4E16\u754C (Hello World)</p>
+    <p>Japanese: \u3053\u3093\u306B\u3061\u306F</p>
+    <p>Korean: \uC548\uB155\uD558\uC138\uC694</p>
+  </div>
+
+  <h2>Arabic & Hebrew</h2>
+  <div class="sample" style="font-size: 18px;">
+    <p>Arabic: \u0645\u0631\u062D\u0628\u0627 \u0628\u0627\u0644\u0639\u0627\u0644\u0645</p>
+    <p>Hebrew: \u05E9\u05DC\u05D5\u05DD \u05E2\u05D5\u05DC\u05DD</p>
+    <p>Mixed: Hello \u0645\u0631\u062D\u0628\u0627 World</p>
+  </div>
+
+  <h2>Mathematical Symbols</h2>
+  <div class="sample">
+    <p>Greek: \u03B1 \u03B2 \u03B3 \u03B4 \u03B5 \u03C0 \u03C9</p>
+    <p>Operators: \u00B1 \u00D7 \u00F7 \u2260 \u2264 \u2265 \u221E \u2211 \u222B</p>
+    <p>Sets: \u2208 \u2209 \u2282 \u2283 \u222A \u2229 \u2205</p>
+  </div>
+
+  <h2>Currency & Typography</h2>
+  <table>
+    <tr><th>Symbol</th><th>Name</th><th>Example</th></tr>
+    <tr><td>\u20AC</td><td>Euro</td><td>\u20AC1,234.56</td></tr>
+    <tr><td>\u00A3</td><td>Pound</td><td>\u00A31,234.56</td></tr>
+    <tr><td>\u00A5</td><td>Yen</td><td>\u00A5123,456</td></tr>
+    <tr><td>\u20B9</td><td>Rupee</td><td>\u20B91,23,456</td></tr>
+  </table>
+
+  <h2>Accented Characters</h2>
+  <div class="sample">
+    <p>French: \u00E0\u00E2\u00E6\u00E7\u00E9\u00E8\u00EA\u00EB \u2014 R\u00E9sum\u00E9, na\u00EFve, caf\u00E9</p>
+    <p>German: \u00E4\u00F6\u00FC\u00DF \u2014 Stra\u00DFe, Gem\u00FCtlichkeit</p>
+    <p>Spanish: \u00E1\u00E9\u00ED\u00F3\u00FA\u00F1\u00BF\u00A1 \u2014 El ni\u00F1o, se\u00F1or</p>
+  </div>
+
+  <p style="font-size: 9pt; color: #999;">Generated with ironpress</p>
+</body>
+</html>`
     };
 
     // Init WASM
@@ -298,7 +356,6 @@ svg: `<h1>SVG Graphics</h1>
       if (key && EXAMPLES[key]) {
         input.value = EXAMPLES[key];
         modeSelect.value = (key === 'markdown' || key === 'math') ? 'markdown' : 'html';
-        if (key === 'svg') modeSelect.value = 'html';
         examplesSelect.value = '';
       }
     });
