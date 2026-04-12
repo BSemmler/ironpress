@@ -222,7 +222,9 @@ fn flush_inline_block_group(
         let child_h = child_style.height.unwrap_or(0.0);
 
         let inner_width = if child_style.box_sizing == BoxSizing::BorderBox {
-            child_w - child_style.padding.left - child_style.padding.right
+            child_w
+                - child_style.padding.left
+                - child_style.padding.right
                 - child_style.border.horizontal_width()
         } else {
             child_w
@@ -3004,8 +3006,7 @@ fn flatten_element(
                     } else {
                         // Flush any pending inline-block group
                         if !ib_group_wrapper.is_empty() {
-                            let taken: Vec<&ElementNode> =
-                                ib_group_wrapper.drain(..).collect();
+                            let taken: Vec<&ElementNode> = ib_group_wrapper.drain(..).collect();
                             flush_inline_block_group(
                                 &taken,
                                 &style,
