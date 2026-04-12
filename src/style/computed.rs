@@ -6400,7 +6400,7 @@ mod tests {
     fn counter_increment_parsed() {
         let parent = ComputedStyle::default();
         let s = compute_style(HtmlTag::Div, Some("counter-increment: section"), &parent);
-        assert_eq!(s.counter_increment, vec![("section".to_string(), 0)]);
+        assert_eq!(s.counter_increment, vec![("section".to_string(), 1)]);
     }
 
     #[test]
