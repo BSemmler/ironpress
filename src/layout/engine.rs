@@ -2839,12 +2839,38 @@ fn flatten_element(
                 fonts,
             );
         } else {
-            // Check if children contain block-level elements (e.g. <p>, <div>, <h2>).
-            // If so, split: collect inline text runs between block children,
-            // flush as TextBlock, then recurse into each block child.
-            let has_block_children = el.children.iter().any(|c| {
-                matches!(c, DomNode::Element(e) if recurses_as_layout_child(e.tag) && !collects_as_inline_text(e.tag))
-            });
+            // Check if children contain block-level elements that have their own
+            // margins (e.g. <p>, <h1>-<h6>, <ul>, <ol>, <blockquote>).
+            // These need individual layout via flatten_element to preserve
+            // their margins. Generic containers (<div>) are not included to
+            // avoid expensive recursion on deeply nested structures.
+            fn has_own_margins(tag: HtmlTag) -> bool {
+                matches!(
+                    tag,
+                    HtmlTag::P
+                        | HtmlTag::H1
+                        | HtmlTag::H2
+                        | HtmlTag::H3
+                        | HtmlTag::H4
+                        | HtmlTag::H5
+                        | HtmlTag::H6
+                        | HtmlTag::Ul
+                        | HtmlTag::Ol
+                        | HtmlTag::Li
+                        | HtmlTag::Blockquote
+                        | HtmlTag::Pre
+                        | HtmlTag::Hr
+                        | HtmlTag::Dl
+                        | HtmlTag::Dt
+                        | HtmlTag::Dd
+                        | HtmlTag::Figure
+                        | HtmlTag::Table
+                )
+            }
+            let has_block_children = el
+                .children
+                .iter()
+                .any(|c| matches!(c, DomNode::Element(e) if has_own_margins(e.tag)));
 
             if has_block_children {
                 // Mixed inline + block children: split at block boundaries
@@ -2862,7 +2888,7 @@ fn flatten_element(
                             );
                         }
                         DomNode::Element(child_el)
-                            if recurses_as_layout_child(child_el.tag)
+                            if has_own_margins(child_el.tag)
                                 && !collects_as_inline_text(child_el.tag) =>
                         {
                             // Flush inline runs before block child
