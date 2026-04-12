@@ -3349,7 +3349,13 @@ fn flatten_element(
             // after the top padding.  The wrapper advanced y by its full
             // height; we only pull back by (children_h + padding_bottom + border)
             // so that padding_top of space remains above the children.
-            let pullback = children_h + style.padding.bottom + style.border.vertical_width();
+            // For overflow:hidden, use container_h (specified height) not children_h,
+            // since the wrapper only advances y by container_h.
+            let pullback = if style.overflow == Overflow::Hidden && effective_height.is_some() {
+                container_h - style.padding.top
+            } else {
+                children_h + style.padding.bottom + style.border.vertical_width()
+            };
             output.push(LayoutElement::TextBlock {
                 lines: Vec::new(),
                 margin_top: -pullback,
