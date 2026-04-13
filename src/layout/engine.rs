@@ -2697,16 +2697,30 @@ fn flatten_element(
         let mut block_w = available_width;
         if let Some(w) = style.width {
             block_w = w.min(available_width);
+        } else if let Some(pct) = style.percentage_sizing.width {
+            block_w = (pct / 100.0 * available_width).min(available_width);
         }
         if let Some(mw) = style.max_width {
             block_w = block_w.min(mw);
+        } else if let Some(pct) = style.percentage_sizing.max_width {
+            block_w = block_w.min(pct / 100.0 * available_width);
         }
         if let Some(mw) = style.min_width {
             block_w = block_w.max(mw);
+        } else if let Some(pct) = style.percentage_sizing.min_width {
+            block_w = block_w.max(pct / 100.0 * available_width);
         }
 
         // Compute effective height considering CSS height/min-height/max-height
         let mut effective_height = style.height;
+        if effective_height.is_none() {
+            if let Some(pct) = style.percentage_sizing.height {
+                // Resolve percentage height against containing block if available
+                if let Some(cb) = abs_containing_block {
+                    effective_height = Some(pct / 100.0 * cb.height);
+                }
+            }
+        }
         if let Some(min_h) = style.min_height {
             effective_height = Some(effective_height.map_or(min_h, |h| h.max(min_h)));
         }
@@ -2715,8 +2729,10 @@ fn flatten_element(
         }
 
         // Compute margin auto offset for horizontal centering
-        let has_explicit_width =
-            style.width.is_some() || style.max_width.is_some() || style.min_width.is_some();
+        let has_explicit_width = style.width.is_some()
+            || style.max_width.is_some()
+            || style.min_width.is_some()
+            || style.percentage_sizing.width.is_some();
         let auto_offset_left = if has_explicit_width && block_w < available_width {
             if style.margin_left_auto && style.margin_right_auto {
                 (available_width - block_w) / 2.0
