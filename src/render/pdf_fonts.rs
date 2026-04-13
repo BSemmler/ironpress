@@ -777,6 +777,7 @@ mod tests {
             gap: 0.0,
             margin_top: 0.0,
             margin_bottom: 0.0,
+            border: crate::layout::engine::LayoutBorder::default(),
         };
         let fonts: HashMap<String, TtfFont> = HashMap::new();
         let mut usage: BTreeMap<String, FontUsage> = BTreeMap::new();

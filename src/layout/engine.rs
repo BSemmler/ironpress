@@ -1208,6 +1208,7 @@ pub enum LayoutElement {
         gap: f32,
         margin_top: f32,
         margin_bottom: f32,
+        border: LayoutBorder,
     },
     /// An embedded image.
     Image {
@@ -5429,6 +5430,11 @@ fn flatten_grid_container(
             gap,
             margin_top,
             margin_bottom: 0.0,
+            border: if is_first_row {
+                LayoutBorder::from_computed(&style.border)
+            } else {
+                LayoutBorder::default()
+            },
         });
 
         is_first_row = false;

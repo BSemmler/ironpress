@@ -1007,10 +1007,49 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     cells,
                     col_widths,
                     gap,
+                    border: grid_border,
                     ..
                 } => {
                     let row_y = page_size.height - margin.top - y_pos;
                     let row_height = compute_row_height(cells);
+                    let grid_total_w: f32 = col_widths.iter().sum::<f32>()
+                        + gap * col_widths.len().saturating_sub(1) as f32;
+
+                    // Draw grid container border
+                    if grid_border.has_any() {
+                        let bx1 = margin.left;
+                        let bx2 = margin.left + grid_total_w;
+                        let by1 = row_y;
+                        let by2 = row_y - row_height;
+                        if grid_border.top.width > 0.0 {
+                            let (r, g, b) = grid_border.top.color;
+                            content.push_str(&format!(
+                                "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx2} {by1} l S\n",
+                                grid_border.top.width
+                            ));
+                        }
+                        if grid_border.right.width > 0.0 {
+                            let (r, g, b) = grid_border.right.color;
+                            content.push_str(&format!(
+                                "{r} {g} {b} RG\n{} w\n{bx2} {by1} m {bx2} {by2} l S\n",
+                                grid_border.right.width
+                            ));
+                        }
+                        if grid_border.bottom.width > 0.0 {
+                            let (r, g, b) = grid_border.bottom.color;
+                            content.push_str(&format!(
+                                "{r} {g} {b} RG\n{} w\n{bx1} {by2} m {bx2} {by2} l S\n",
+                                grid_border.bottom.width
+                            ));
+                        }
+                        if grid_border.left.width > 0.0 {
+                            let (r, g, b) = grid_border.left.color;
+                            content.push_str(&format!(
+                                "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx1} {by2} l S\n",
+                                grid_border.left.width
+                            ));
+                        }
+                    }
 
                     let mut cell_x = margin.left;
                     for (i, cell) in cells.iter().enumerate() {
