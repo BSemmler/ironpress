@@ -1027,12 +1027,18 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     col_widths,
                     gap,
                     border: grid_border,
+                    padding_left: grid_pl,
+                    padding_right: grid_pr,
+                    padding_top: grid_pt,
+                    padding_bottom: grid_pb,
                     ..
                 } => {
                     let row_y = page_size.height - margin.top - y_pos;
-                    let row_height = compute_row_height(cells);
+                    let row_height = compute_row_height(cells) + grid_pt + grid_pb;
                     let grid_total_w: f32 = col_widths.iter().sum::<f32>()
-                        + gap * col_widths.len().saturating_sub(1) as f32;
+                        + gap * col_widths.len().saturating_sub(1) as f32
+                        + grid_pl
+                        + grid_pr;
 
                     // Draw grid container border
                     if grid_border.has_any() {
@@ -1070,7 +1076,8 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         }
                     }
 
-                    let mut cell_x = margin.left;
+                    let mut cell_x = margin.left + grid_pl;
+                    let cell_row_y = row_y - grid_pt;
                     for (i, cell) in cells.iter().enumerate() {
                         let cell_w = if i < col_widths.len() {
                             col_widths[i]

@@ -1209,6 +1209,10 @@ pub enum LayoutElement {
         margin_top: f32,
         margin_bottom: f32,
         border: LayoutBorder,
+        padding_left: f32,
+        padding_right: f32,
+        padding_top: f32,
+        padding_bottom: f32,
     },
     /// An embedded image.
     Image {
@@ -5493,15 +5497,33 @@ fn flatten_grid_container(
             } else {
                 LayoutBorder::default()
             },
+            padding_left: if is_first_row {
+                style.padding.left
+            } else {
+                0.0
+            },
+            padding_right: if is_first_row {
+                style.padding.right
+            } else {
+                0.0
+            },
+            padding_top: if is_first_row { style.padding.top } else { 0.0 },
+            padding_bottom: 0.0,
         });
 
         is_first_row = false;
         child_idx = row_end;
     }
 
-    // Add bottom margin after the last row
-    if let Some(LayoutElement::GridRow { margin_bottom, .. }) = output.last_mut() {
+    // Add bottom margin and padding after the last row
+    if let Some(LayoutElement::GridRow {
+        margin_bottom,
+        padding_bottom,
+        ..
+    }) = output.last_mut()
+    {
         *margin_bottom = style.margin.bottom;
+        *padding_bottom = style.padding.bottom;
     }
 }
 
@@ -7704,13 +7726,15 @@ fn estimate_element_height_bounded(element: &LayoutElement, depth: usize) -> f32
             cells,
             margin_top,
             margin_bottom,
+            padding_top,
+            padding_bottom,
             ..
         } => {
             let row_h = cells
                 .iter()
                 .map(table_cell_content_height)
                 .fold(0.0f32, f32::max);
-            margin_top + row_h + margin_bottom
+            margin_top + padding_top + row_h + padding_bottom + margin_bottom
         }
         LayoutElement::Image {
             height,
