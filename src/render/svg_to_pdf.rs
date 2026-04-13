@@ -2,10 +2,10 @@
 
 use crate::parser::svg::{
     PathCommand, SvgClipPathUnits, SvgGradientUnits, SvgLinearGradient, SvgNode, SvgPaint,
-    SvgStyle, SvgTextContext, SvgTransform, SvgTree,
+    SvgRadialGradient, SvgStyle, SvgTextAnchor, SvgTextContext, SvgTransform, SvgTree,
 };
 use crate::render::pdf::encode_pdf_text;
-use crate::render::shading::{ShadingEntry, push_axial_shading};
+use crate::render::shading::{ShadingEntry, push_axial_shading, push_radial_shading};
 use crate::render::svg_geometry::{
     SvgPlacementRequest, SvgViewportBox, compute_raster_placement, compute_svg_placement,
 };
@@ -324,6 +324,11 @@ fn render_node(
                         } else {
                             out.push_str("n\n");
                         }
+                    } else if let Some(rg) = defs.radial_gradients.get(id) {
+                        let bbox = node_object_bounding_box(node, text_ctx);
+                        let coords = resolve_radial_gradient_coords(rg, bbox);
+                        let (shadings, shading_counter) = resources.shading_state();
+                        paint_svg_radial_gradient_fill(rg, coords, out, shadings, shading_counter);
                     } else {
                         out.push_str("n\n");
                     }
@@ -385,6 +390,7 @@ fn render_node(
             font_family,
             font_bold,
             font_italic,
+            text_anchor,
             content,
             style,
         } => {
@@ -434,6 +440,20 @@ fn render_node(
                 (false, false) => 3,
             };
 
+            // Adjust x for text-anchor
+            let text_x = match text_anchor {
+                SvgTextAnchor::Start => *x,
+                SvgTextAnchor::Middle | SvgTextAnchor::End => {
+                    let (ff, is_bold) = font_metrics_font(&font);
+                    let text_w = crate::fonts::str_width(content, size, &ff, is_bold);
+                    if *text_anchor == SvgTextAnchor::Middle {
+                        x - text_w * 0.5
+                    } else {
+                        x - text_w
+                    }
+                }
+            };
+
             out.push_str("BT\n");
             out.push_str(&format!("/{font} {size} Tf\n"));
             out.push_str(&format!("{text_render_mode} Tr\n"));
@@ -444,7 +464,7 @@ fn render_node(
                 out.push_str(&format!("{r} {g} {b} RG\n"));
                 out.push_str(&format!("{} w\n", style.stroke_width));
             }
-            out.push_str(&format!("1 0 0 -1 {x} {y} Tm\n"));
+            out.push_str(&format!("1 0 0 -1 {text_x} {y} Tm\n"));
             let encoded = encode_pdf_text(content);
             out.push_str(&format!("({encoded}) Tj\n"));
             out.push_str("ET\n");
@@ -624,6 +644,68 @@ fn paint_svg_linear_gradient_fill(
         .map(|stop| (stop.offset, stop.color))
         .collect();
     let name = push_axial_shading(shadings, shading_counter, coords, stops);
+
+    out.push_str("q\n");
+    out.push_str("W n\n");
+    if let Some(SvgTransform::Matrix(a, b, c, d, e, f)) = gradient.gradient_transform {
+        out.push_str(&format!("{a} {b} {c} {d} {e} {f} cm\n"));
+    }
+    out.push_str(&format!("/{name} sh\n"));
+    out.push_str("Q\n");
+}
+
+fn resolve_radial_gradient_coords(
+    gradient: &SvgRadialGradient,
+    bbox: Option<SvgObjectBoundingBox>,
+) -> [f32; 6] {
+    match gradient.gradient_units {
+        SvgGradientUnits::ObjectBoundingBox => {
+            if let Some(bbox) = bbox {
+                let w = bbox.width;
+                let h = bbox.height;
+                [
+                    bbox.min_x + gradient.fx * w,
+                    bbox.min_y + gradient.fy * h,
+                    0.0, // inner radius
+                    bbox.min_x + gradient.cx * w,
+                    bbox.min_y + gradient.cy * h,
+                    gradient.r * w.max(h), // outer radius
+                ]
+            } else {
+                [
+                    gradient.fx,
+                    gradient.fy,
+                    0.0,
+                    gradient.cx,
+                    gradient.cy,
+                    gradient.r,
+                ]
+            }
+        }
+        SvgGradientUnits::UserSpaceOnUse => [
+            gradient.fx,
+            gradient.fy,
+            0.0,
+            gradient.cx,
+            gradient.cy,
+            gradient.r,
+        ],
+    }
+}
+
+fn paint_svg_radial_gradient_fill(
+    gradient: &SvgRadialGradient,
+    coords: [f32; 6],
+    out: &mut String,
+    shadings: &mut Vec<ShadingEntry>,
+    shading_counter: &mut usize,
+) {
+    let stops: Vec<(f32, (f32, f32, f32))> = gradient
+        .stops
+        .iter()
+        .map(|stop| (stop.offset, stop.color))
+        .collect();
+    let name = push_radial_shading(shadings, shading_counter, coords, stops);
 
     out.push_str("q\n");
     out.push_str("W n\n");
@@ -1634,6 +1716,7 @@ mod tests {
             font_family: Some("Helvetica".to_string()),
             font_bold: Some(false),
             font_italic: Some(false),
+            text_anchor: SvgTextAnchor::Start,
             content: text.to_string(),
             style: SvgStyle {
                 clip_path: Some("clip".to_string()),
@@ -2712,6 +2795,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -2764,6 +2848,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -2820,6 +2905,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle::default(),
             }],
@@ -2857,6 +2943,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -2904,6 +2991,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -2956,6 +3044,7 @@ mod tests {
                     font_family: None,
                     font_bold: None,
                     font_italic: None,
+                    text_anchor: SvgTextAnchor::Start,
                     content: "Hello".to_string(),
                     style: SvgStyle {
                         fill: SvgPaint::CurrentColor,
@@ -2994,6 +3083,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -3044,6 +3134,7 @@ mod tests {
                     font_family: None,
                     font_bold: None,
                     font_italic: None,
+                    text_anchor: SvgTextAnchor::Start,
                     content: "Hello".to_string(),
                     style: SvgStyle {
                         fill: SvgPaint::CurrentColor,
@@ -3082,6 +3173,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle::default(),
             }],

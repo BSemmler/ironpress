@@ -187,6 +187,7 @@ fn flush_inline_block_group(
         padding_right: f32,
         padding_bottom: f32,
         padding_left: f32,
+        border: LayoutBorder,
         border_radius: f32,
         transform: Option<Transform>,
         background_gradient: Option<LinearGradient>,
@@ -338,6 +339,7 @@ fn flush_inline_block_group(
             padding_right: child_style.padding.right,
             padding_bottom: child_style.padding.bottom,
             padding_left: child_style.padding.left,
+            border: LayoutBorder::from_computed(&child_style.border),
             border_radius: child_style.border_radius,
             transform: child_style.transform,
             background_gradient: bg_fields.gradient,
@@ -384,6 +386,7 @@ fn flush_inline_block_group(
             padding_right: item.padding_right,
             padding_bottom: item.padding_bottom,
             padding_left: item.padding_left,
+            border: item.border,
             border_radius: item.border_radius,
             background_gradient: item.background_gradient.clone(),
             background_radial_gradient: item.background_radial_gradient.clone(),
@@ -985,6 +988,7 @@ pub struct FlexCell {
     pub padding_right: f32,
     pub padding_bottom: f32,
     pub padding_left: f32,
+    pub border: LayoutBorder,
     pub border_radius: f32,
     pub background_gradient: Option<LinearGradient>,
     pub background_radial_gradient: Option<RadialGradient>,
@@ -1204,6 +1208,7 @@ pub enum LayoutElement {
         gap: f32,
         margin_top: f32,
         margin_bottom: f32,
+        border: LayoutBorder,
     },
     /// An embedded image.
     Image {
@@ -2692,16 +2697,30 @@ fn flatten_element(
         let mut block_w = available_width;
         if let Some(w) = style.width {
             block_w = w.min(available_width);
+        } else if let Some(pct) = style.percentage_sizing.width {
+            block_w = (pct / 100.0 * available_width).min(available_width);
         }
         if let Some(mw) = style.max_width {
             block_w = block_w.min(mw);
+        } else if let Some(pct) = style.percentage_sizing.max_width {
+            block_w = block_w.min(pct / 100.0 * available_width);
         }
         if let Some(mw) = style.min_width {
             block_w = block_w.max(mw);
+        } else if let Some(pct) = style.percentage_sizing.min_width {
+            block_w = block_w.max(pct / 100.0 * available_width);
         }
 
         // Compute effective height considering CSS height/min-height/max-height
         let mut effective_height = style.height;
+        if effective_height.is_none() {
+            if let Some(pct) = style.percentage_sizing.height {
+                // Resolve percentage height against containing block if available
+                if let Some(cb) = abs_containing_block {
+                    effective_height = Some(pct / 100.0 * cb.height);
+                }
+            }
+        }
         if let Some(min_h) = style.min_height {
             effective_height = Some(effective_height.map_or(min_h, |h| h.max(min_h)));
         }
@@ -2710,8 +2729,10 @@ fn flatten_element(
         }
 
         // Compute margin auto offset for horizontal centering
-        let has_explicit_width =
-            style.width.is_some() || style.max_width.is_some() || style.min_width.is_some();
+        let has_explicit_width = style.width.is_some()
+            || style.max_width.is_some()
+            || style.min_width.is_some()
+            || style.percentage_sizing.width.is_some();
         let auto_offset_left = if has_explicit_width && block_w < available_width {
             if style.margin_left_auto && style.margin_right_auto {
                 (available_width - block_w) / 2.0
@@ -3032,8 +3053,10 @@ fn flatten_element(
                         false
                     }
                 });
+            let has_abs_pseudo_early = positioned_container && (before_is_abs || after_is_abs);
             let has_block_children = !parent_has_visual
                 && !early_has_abs_children
+                && !has_abs_pseudo_early
                 && el.children.iter().any(|c| {
                     matches!(c, DomNode::Element(e)
                         if (has_own_margins(e.tag)
@@ -3658,7 +3681,10 @@ fn flatten_element(
             || has_abs_children;
         let no_inline_content = !had_inline_runs;
 
-        if (no_inline_content || has_block_kids_for_wrapper) && needs_wrapper && nesting_depth < 40
+        let has_abs_pseudo = positioned_container && (before_is_abs || after_is_abs);
+        if (no_inline_content || has_block_kids_for_wrapper || has_abs_pseudo)
+            && needs_wrapper
+            && nesting_depth < 40
         {
             // Pre-flatten children to measure total height.
             // If there's saved inline content, include it as the first child.
@@ -4812,6 +4838,7 @@ fn flatten_flex_container(
                                 padding_right: 0.0,
                                 padding_bottom: 0.0,
                                 padding_left: 0.0,
+                                border: LayoutBorder::default(),
                                 border_radius: 0.0,
                                 background_gradient: None,
                                 background_radial_gradient: None,
@@ -4870,6 +4897,7 @@ fn flatten_flex_container(
                             padding_right: first_pr,
                             padding_bottom: first_pb,
                             padding_left: first_pl,
+                            border: LayoutBorder::default(),
                             border_radius: first_br,
                             background_gradient: None,
                             background_radial_gradient: None,
@@ -4917,6 +4945,7 @@ fn flatten_flex_container(
                             padding_right: *tb_pr,
                             padding_bottom: *tb_pb,
                             padding_left: *tb_pl,
+                            border: LayoutBorder::default(),
                             border_radius: *tb_br,
                             background_gradient: tb_grad.clone(),
                             background_radial_gradient: tb_rgrad.clone(),
@@ -4942,6 +4971,7 @@ fn flatten_flex_container(
                             padding_right: 0.0,
                             padding_bottom: 0.0,
                             padding_left: 0.0,
+                            border: LayoutBorder::default(),
                             border_radius: 0.0,
                             background_gradient: None,
                             background_radial_gradient: None,
@@ -5421,6 +5451,11 @@ fn flatten_grid_container(
             gap,
             margin_top,
             margin_bottom: 0.0,
+            border: if is_first_row {
+                LayoutBorder::from_computed(&style.border)
+            } else {
+                LayoutBorder::default()
+            },
         });
 
         is_first_row = false;

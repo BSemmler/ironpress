@@ -264,6 +264,8 @@ pub enum Transform {
     Scale(f32, f32),
     /// Translate by (tx, ty) in pt.
     Translate(f32, f32),
+    /// Pre-composed affine matrix (a, b, c, d, e, f) for chained transforms.
+    Matrix(f32, f32, f32, f32, f32, f32),
 }
 
 /// CSS box-sizing property.
@@ -559,6 +561,8 @@ pub struct ComputedStyle {
     pub margin: EdgeSizes,
     pub padding: EdgeSizes,
     pub text_align: TextAlign,
+    /// CSS direction property (ltr/rtl), set from `dir` attribute or CSS.
+    pub direction_rtl: bool,
     pub text_decoration_underline: bool,
     pub text_decoration_line_through: bool,
     pub line_height: f32,
@@ -650,6 +654,7 @@ impl Default for ComputedStyle {
             margin: EdgeSizes::default(),
             padding: EdgeSizes::default(),
             text_align: TextAlign::Left,
+            direction_rtl: false,
             text_decoration_underline: false,
             text_decoration_line_through: false,
             line_height: f32::NAN,
@@ -891,6 +896,23 @@ pub fn compute_style_with_context(
     // Apply tag defaults
     let defaults = default_style(tag);
     apply_style_map(&mut style, &defaults, parent);
+
+    // Handle HTML dir attribute (inheritable, overrides CSS direction)
+    if let Some(dir) = attributes.get("dir") {
+        match dir.as_str() {
+            "rtl" => {
+                style.direction_rtl = true;
+                // RTL elements default to right-aligned text
+                if style.text_align == TextAlign::Left {
+                    style.text_align = TextAlign::Right;
+                }
+            }
+            "ltr" => {
+                style.direction_rtl = false;
+            }
+            _ => {}
+        }
+    }
 
     // Apply stylesheet rules (between defaults and inline).
     // Skip pseudo-element rules — they target ::before/::after, not the element itself.
@@ -2680,18 +2702,11 @@ fn parse_shadow_length(val: &str) -> Option<f32> {
     }
 }
 
-/// Parse a CSS `transform` value.
+/// Parse a single CSS transform function (e.g. `rotate(45deg)`).
 ///
-/// Supports:
-/// - `rotate(45deg)`
-/// - `scale(2)` or `scale(1.5, 2.0)`
-/// - `translate(10pt, 20pt)` or `translate(10px, 20px)`
-/// - `none`
-fn parse_transform(val: &str) -> Option<Transform> {
+/// Returns the parsed transform and `None` when the function is unknown.
+fn parse_single_transform(val: &str) -> Option<Transform> {
     let val = val.trim();
-    if val == "none" {
-        return None;
-    }
 
     if let Some(inner) = val
         .strip_prefix("rotate(")
@@ -2701,10 +2716,25 @@ fn parse_transform(val: &str) -> Option<Transform> {
         let degrees = if let Some(n) = inner.strip_suffix("deg") {
             n.trim().parse::<f32>().ok()?
         } else {
-            // bare number treated as degrees
             inner.parse::<f32>().ok()?
         };
         return Some(Transform::Rotate(degrees));
+    }
+
+    if let Some(inner) = val
+        .strip_prefix("scaleX(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let sx = inner.trim().parse::<f32>().ok()?;
+        return Some(Transform::Scale(sx, 1.0));
+    }
+
+    if let Some(inner) = val
+        .strip_prefix("scaleY(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let sy = inner.trim().parse::<f32>().ok()?;
+        return Some(Transform::Scale(1.0, sy));
     }
 
     if let Some(inner) = val.strip_prefix("scale(").and_then(|s| s.strip_suffix(')')) {
@@ -2717,6 +2747,22 @@ fn parse_transform(val: &str) -> Option<Transform> {
             let sy = parts[1].trim().parse::<f32>().ok()?;
             return Some(Transform::Scale(sx, sy));
         }
+    }
+
+    if let Some(inner) = val
+        .strip_prefix("translateX(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let tx = parse_transform_length(inner.trim())?;
+        return Some(Transform::Translate(tx, 0.0));
+    }
+
+    if let Some(inner) = val
+        .strip_prefix("translateY(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let ty = parse_transform_length(inner.trim())?;
+        return Some(Transform::Translate(0.0, ty));
     }
 
     if let Some(inner) = val
@@ -2734,7 +2780,123 @@ fn parse_transform(val: &str) -> Option<Transform> {
         }
     }
 
+    if let Some(inner) = val.strip_prefix("skew(").and_then(|s| s.strip_suffix(')')) {
+        let parts: Vec<&str> = inner.split(',').collect();
+        let ax = parts
+            .first()?
+            .trim()
+            .strip_suffix("deg")
+            .and_then(|n| n.parse::<f32>().ok())?;
+        let ay = if parts.len() >= 2 {
+            parts[1]
+                .trim()
+                .strip_suffix("deg")
+                .and_then(|n| n.parse::<f32>().ok())
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let tan_x = (ax * std::f32::consts::PI / 180.0).tan();
+        let tan_y = (ay * std::f32::consts::PI / 180.0).tan();
+        return Some(Transform::Matrix(1.0, tan_y, tan_x, 1.0, 0.0, 0.0));
+    }
+
+    if let Some(inner) = val.strip_prefix("skewX(").and_then(|s| s.strip_suffix(')')) {
+        let deg = inner
+            .trim()
+            .strip_suffix("deg")
+            .and_then(|n| n.parse::<f32>().ok())?;
+        let tan_x = (deg * std::f32::consts::PI / 180.0).tan();
+        return Some(Transform::Matrix(1.0, 0.0, tan_x, 1.0, 0.0, 0.0));
+    }
+
+    if let Some(inner) = val.strip_prefix("skewY(").and_then(|s| s.strip_suffix(')')) {
+        let deg = inner
+            .trim()
+            .strip_suffix("deg")
+            .and_then(|n| n.parse::<f32>().ok())?;
+        let tan_y = (deg * std::f32::consts::PI / 180.0).tan();
+        return Some(Transform::Matrix(1.0, tan_y, 0.0, 1.0, 0.0, 0.0));
+    }
+
     None
+}
+
+/// Convert a Transform into its affine matrix (a, b, c, d, e, f).
+fn transform_to_matrix(t: &Transform) -> [f32; 6] {
+    match t {
+        Transform::Rotate(deg) => {
+            let rad = deg * std::f32::consts::PI / 180.0;
+            let c = rad.cos();
+            let s = rad.sin();
+            [c, s, -s, c, 0.0, 0.0]
+        }
+        Transform::Scale(sx, sy) => [*sx, 0.0, 0.0, *sy, 0.0, 0.0],
+        Transform::Translate(tx, ty) => [1.0, 0.0, 0.0, 1.0, *tx, *ty],
+        Transform::Matrix(a, b, c, d, e, f) => [*a, *b, *c, *d, *e, *f],
+    }
+}
+
+/// Multiply two 2D affine matrices: result = lhs × rhs.
+fn multiply_matrices(lhs: &[f32; 6], rhs: &[f32; 6]) -> [f32; 6] {
+    [
+        lhs[0] * rhs[0] + lhs[2] * rhs[1],
+        lhs[1] * rhs[0] + lhs[3] * rhs[1],
+        lhs[0] * rhs[2] + lhs[2] * rhs[3],
+        lhs[1] * rhs[2] + lhs[3] * rhs[3],
+        lhs[0] * rhs[4] + lhs[2] * rhs[5] + lhs[4],
+        lhs[1] * rhs[4] + lhs[3] * rhs[5] + lhs[5],
+    ]
+}
+
+/// Parse a CSS `transform` value (one or more space-separated functions).
+///
+/// Supports: rotate, scale, scaleX, scaleY, translate, translateX, translateY,
+/// skew, skewX, skewY, and chained transforms like `rotate(10deg) scale(1.1)`.
+fn parse_transform(val: &str) -> Option<Transform> {
+    let val = val.trim();
+    if val == "none" {
+        return None;
+    }
+
+    // Split into individual transform functions by finding `) ` boundaries.
+    let mut functions: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let bytes = val.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b')' {
+            functions.push(&val[start..=i]);
+            start = i + 1;
+        }
+    }
+    // Skip any trailing whitespace-only content
+    let remaining = val[start..].trim();
+    if !remaining.is_empty() {
+        return None; // trailing garbage
+    }
+
+    if functions.is_empty() {
+        return None;
+    }
+
+    if functions.len() == 1 {
+        return parse_single_transform(functions[0]);
+    }
+
+    // Multiple transforms — compose into a single matrix.
+    // CSS: transforms are applied right-to-left, but the `cm` operator
+    // in PDF also post-multiplies, so we compose left-to-right here and
+    // the renderer will apply the resulting matrix around the centre.
+    let mut result = [1.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0]; // identity
+    for func in &functions {
+        let t = parse_single_transform(func)?;
+        let m = transform_to_matrix(&t);
+        result = multiply_matrices(&result, &m);
+    }
+
+    Some(Transform::Matrix(
+        result[0], result[1], result[2], result[3], result[4], result[5],
+    ))
 }
 
 /// Parse a length value for transform translate (px or pt or bare number).
@@ -5376,8 +5538,51 @@ mod tests {
 
     #[test]
     fn parse_transform_unknown_returns_none() {
-        let t = parse_transform("skew(30deg)");
+        let t = parse_transform("perspective(500px)");
         assert!(t.is_none());
+    }
+
+    #[test]
+    fn parse_transform_skew() {
+        let t = parse_transform("skew(30deg)");
+        assert!(t.is_some());
+        if let Some(Transform::Matrix(a, _b, c, _d, _e, _f)) = t {
+            assert!((a - 1.0).abs() < 0.001);
+            assert!((c - (30.0_f32 * std::f32::consts::PI / 180.0).tan()).abs() < 0.001);
+        } else {
+            panic!("expected Matrix");
+        }
+    }
+
+    #[test]
+    fn parse_transform_chained() {
+        let t = parse_transform("rotate(10deg) scale(1.1)");
+        assert!(t.is_some());
+        assert!(matches!(t, Some(Transform::Matrix(..))));
+    }
+
+    #[test]
+    fn parse_transform_scale_x_y() {
+        assert_eq!(
+            parse_transform("scaleX(1.5)"),
+            Some(Transform::Scale(1.5, 1.0))
+        );
+        assert_eq!(
+            parse_transform("scaleY(0.5)"),
+            Some(Transform::Scale(1.0, 0.5))
+        );
+    }
+
+    #[test]
+    fn parse_transform_translate_x_y() {
+        assert!(matches!(
+            parse_transform("translateX(40px)"),
+            Some(Transform::Translate(_, 0.0))
+        ));
+        assert!(matches!(
+            parse_transform("translateY(20px)"),
+            Some(Transform::Translate(0.0, _))
+        ));
     }
 
     #[test]
