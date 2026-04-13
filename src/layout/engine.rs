@@ -2813,11 +2813,18 @@ fn flatten_element(
             }
         }
 
+        // When the element has absolute pseudo-elements, skip inline text
+        // collection. The wrapper path will handle all children via
+        // flatten_element, avoiding double-rendering of text.
+        let skip_inline_collection = positioned_container && (before_is_abs || after_is_abs);
+
         // Collect inline content as text runs, splitting at math elements.
         // When a math span is encountered, flush accumulated text runs as a
         // TextBlock, emit a MathBlock, then continue collecting.
         let mut runs = Vec::new();
-        append_pseudo_inline_run(&mut runs, before_style.as_ref(), el, fonts, counter_state);
+        if !skip_inline_collection {
+            append_pseudo_inline_run(&mut runs, before_style.as_ref(), el, fonts, counter_state);
+        }
 
         // Helper closure: flush accumulated runs as a TextBlock
         let flush_runs = |runs: &mut Vec<TextRun>,
@@ -3112,7 +3119,11 @@ fn flatten_element(
                                 e, &style, rules, &child_ancestors, 0, 0, &[]))
                 });
 
-            if has_block_children {
+            if skip_inline_collection {
+                // All content will be handled by the wrapper path below.
+                // Don't collect inline text — the <p> children will be
+                // processed via flatten_element in the Container wrapper.
+            } else if has_block_children {
                 // For visual containers (border, background), emit a wrapper
                 // TextBlock first, then a pullback spacer so children render
                 // inside the wrapper's padding area.
@@ -3512,7 +3523,9 @@ fn flatten_element(
                 );
             }
         }
-        append_pseudo_inline_run(&mut runs, after_style.as_ref(), el, fonts, counter_state);
+        if !skip_inline_collection {
+            append_pseudo_inline_run(&mut runs, after_style.as_ref(), el, fonts, counter_state);
+        }
 
         let had_inline_runs = runs.iter().any(|r| !r.text.trim().is_empty()) || has_math_children;
         let mut cb_info = None;

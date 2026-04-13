@@ -2693,6 +2693,9 @@ fn render_container_children(
     // batches when we hit a directly-handled type.
     let mut nested_batch: Vec<&LayoutElement> = Vec::new();
     let mut cursor_y = y;
+    // Save original y for absolute positioning (must not be affected by
+    // flow children advancing the cursor).
+    let container_top_y = y;
 
     for child in children {
         let handled_by_nested = matches!(
@@ -2739,13 +2742,14 @@ fn render_container_children(
             } => {
                 // Absolute-positioned children render at offset from the
                 // containing block's padding box (CSS spec), not the content box.
+                // Use container_top_y (original y before flow children advance it).
                 if *position == Position::Absolute {
                     let text_h: f32 = lines.iter().map(|l| l.height).sum();
                     let abs_h = padding_top + text_h + padding_bottom + border.vertical_width();
                     let abs_h = block_height.map_or(abs_h, |h| abs_h.max(h));
                     let abs_w = tb_block_width.unwrap_or(width);
                     let abs_x = (x - abs_pad_left) + offset_left;
-                    let abs_y = (y + abs_pad_top) - offset_top;
+                    let abs_y = (container_top_y + abs_pad_top) - offset_top;
 
                     if let Some((r, g, b, a)) = background_color {
                         let needs_alpha = *a < 1.0;
