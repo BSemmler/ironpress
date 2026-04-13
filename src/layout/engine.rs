@@ -7339,6 +7339,13 @@ struct FloatRegion {
 
 /// Estimate the height of a layout element for wrapper sizing.
 pub(crate) fn estimate_element_height(element: &LayoutElement) -> f32 {
+    estimate_element_height_bounded(element, 50)
+}
+
+fn estimate_element_height_bounded(element: &LayoutElement, depth: usize) -> f32 {
+    if depth == 0 {
+        return 0.0;
+    }
     match element {
         LayoutElement::TextBlock {
             lines,
@@ -7446,7 +7453,10 @@ pub(crate) fn estimate_element_height(element: &LayoutElement) -> f32 {
             block_height,
             ..
         } => {
-            let children_h: f32 = children.iter().map(estimate_element_height).sum();
+            let children_h: f32 = children
+                .iter()
+                .map(|c| estimate_element_height_bounded(c, depth - 1))
+                .sum();
             let content_h = padding_top + children_h + padding_bottom + border.vertical_width();
             let effective_h = block_height.map_or(content_h, |h| content_h.max(h));
             margin_top + effective_h + margin_bottom
@@ -7684,7 +7694,10 @@ fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec<Page> {
                 overflow,
                 ..
             } => {
-                let children_h: f32 = children.iter().map(estimate_element_height).sum();
+                let children_h: f32 = children
+                    .iter()
+                    .map(|c| estimate_element_height_bounded(c, 50))
+                    .sum();
                 let content_h = padding_top + children_h + padding_bottom + border.vertical_width();
                 let effective_h = if *overflow == Overflow::Hidden {
                     block_height.unwrap_or(content_h)

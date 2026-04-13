@@ -2497,6 +2497,32 @@ fn render_container_children(
                 }
                 y -= nk_total_h + margin_bottom;
             }
+            LayoutElement::Svg {
+                tree,
+                width: svg_w,
+                height: svg_h,
+                margin_top: svg_mt,
+                ..
+            } => {
+                y -= svg_mt;
+                let svg_x = x;
+                let svg_y = y - svg_h;
+                content.push_str("q\n");
+                content.push_str(&format!("{svg_w} 0 0 {svg_h} {svg_x} {svg_y} cm\n"));
+                // Simple SVG rendering without shading/image resources
+                {
+                    let mut res = crate::render::svg_to_pdf::SvgPdfResources {
+                        shadings: &mut Vec::new(),
+                        shading_counter: &mut 0,
+                        image_sink: None,
+                    };
+                    crate::render::svg_to_pdf::render_svg_tree_with_resources(
+                        tree, content, &mut res,
+                    );
+                }
+                content.push_str("Q\n");
+                y -= svg_h;
+            }
             _ => {
                 y -= crate::layout::engine::estimate_element_height(child);
             }
