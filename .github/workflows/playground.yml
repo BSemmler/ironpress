@@ -108,10 +108,14 @@ jobs:
               cp "$iron_png" "playground/parity/images/$layer/${base}_ironpress.png"
 
               # Generate visual diff image (red = different pixels, white = same)
+              # compare exits 1 when images differ (normal), only fall back on actual errors (exit 2+)
               compare "$ref_png" "$iron_png" -compose src -highlight-color red -lowlight-color white \
-                "playground/parity/images/$layer/${base}_diff.png" 2>/dev/null || \
-              convert -size $(identify -format "%wx%h" "$ref_png") xc:gray \
                 "playground/parity/images/$layer/${base}_diff.png" 2>/dev/null
+              cmp_exit=$?
+              if [ "$cmp_exit" -gt 1 ] || [ ! -f "playground/parity/images/$layer/${base}_diff.png" ]; then
+                convert -size "$(identify -format '%wx%h' "$ref_png" 2>/dev/null || echo '800x1132')" xc:gray \
+                  "playground/parity/images/$layer/${base}_diff.png" 2>/dev/null
+              fi
             done
           done
 
