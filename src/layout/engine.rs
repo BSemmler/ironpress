@@ -2851,11 +2851,44 @@ fn flatten_element(
             if lines.is_empty() {
                 return;
             }
+            // For inline-block without explicit width, shrink-to-fit
+            let render_w = if style.display == Display::InlineBlock
+                && style.width.is_none()
+                && style.percentage_sizing.width.is_none()
+            {
+                let max_line_w: f32 = lines
+                    .iter()
+                    .map(|l| {
+                        l.runs
+                            .iter()
+                            .map(|r| {
+                                crate::fonts::str_width(
+                                    &r.text,
+                                    r.font_size,
+                                    &r.font_family,
+                                    r.bold,
+                                )
+                            })
+                            .sum::<f32>()
+                    })
+                    .fold(0.0f32, f32::max);
+                let shrink_w = max_line_w
+                    + style.padding.left
+                    + style.padding.right
+                    + style.border.horizontal_width();
+                shrink_w.min(block_w)
+            } else {
+                block_w
+            };
+
             let bg = style
                 .background_color
                 .map(|c: crate::types::Color| c.to_f32_rgba());
-            let explicit_width = if block_w < available_width || style.min_width.is_some() {
-                Some(block_w)
+            let explicit_width = if render_w < available_width
+                || style.min_width.is_some()
+                || style.display == Display::InlineBlock
+            {
+                Some(render_w)
             } else {
                 None
             };

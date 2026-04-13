@@ -1488,38 +1488,52 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
 
                         // Draw cell borders
                         if cell.border.has_any() {
-                            let bx1 = cell_x;
-                            let bx2 = cell_x + cell.width;
-                            let by1 = text_area_top;
-                            let by2 = text_area_top - row_height;
-                            if cell.border.top.width > 0.0 {
+                            if cell.border_radius > 0.0 {
+                                let bw = cell.border.top.width;
                                 let (r, g, b) = cell.border.top.color;
-                                content.push_str(&format!(
-                                    "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx2} {by1} l S\n",
-                                    cell.border.top.width
+                                content.push_str(&format!("{r} {g} {b} RG\n{bw} w\n"));
+                                content.push_str(&rounded_rect_path(
+                                    cell_x,
+                                    text_area_top - row_height,
+                                    cell.width,
+                                    *row_height,
+                                    cell.border_radius,
                                 ));
-                            }
-                            if cell.border.right.width > 0.0 {
-                                let (r, g, b) = cell.border.right.color;
-                                content.push_str(&format!(
-                                    "{r} {g} {b} RG\n{} w\n{bx2} {by1} m {bx2} {by2} l S\n",
-                                    cell.border.right.width
-                                ));
-                            }
-                            if cell.border.bottom.width > 0.0 {
-                                let (r, g, b) = cell.border.bottom.color;
-                                content.push_str(&format!(
-                                    "{r} {g} {b} RG\n{} w\n{bx1} {by2} m {bx2} {by2} l S\n",
-                                    cell.border.bottom.width
-                                ));
-                            }
-                            if cell.border.left.width > 0.0 {
-                                let (r, g, b) = cell.border.left.color;
-                                content.push_str(&format!(
-                                    "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx1} {by2} l S\n",
-                                    cell.border.left.width
-                                ));
-                            }
+                                content.push_str("S\n");
+                            } else {
+                                let bx1 = cell_x;
+                                let bx2 = cell_x + cell.width;
+                                let by1 = text_area_top;
+                                let by2 = text_area_top - row_height;
+                                if cell.border.top.width > 0.0 {
+                                    let (r, g, b) = cell.border.top.color;
+                                    content.push_str(&format!(
+                                        "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx2} {by1} l S\n",
+                                        cell.border.top.width
+                                    ));
+                                }
+                                if cell.border.right.width > 0.0 {
+                                    let (r, g, b) = cell.border.right.color;
+                                    content.push_str(&format!(
+                                        "{r} {g} {b} RG\n{} w\n{bx2} {by1} m {bx2} {by2} l S\n",
+                                        cell.border.right.width
+                                    ));
+                                }
+                                if cell.border.bottom.width > 0.0 {
+                                    let (r, g, b) = cell.border.bottom.color;
+                                    content.push_str(&format!(
+                                        "{r} {g} {b} RG\n{} w\n{bx1} {by2} m {bx2} {by2} l S\n",
+                                        cell.border.bottom.width
+                                    ));
+                                }
+                                if cell.border.left.width > 0.0 {
+                                    let (r, g, b) = cell.border.left.color;
+                                    content.push_str(&format!(
+                                        "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx1} {by2} l S\n",
+                                        cell.border.left.width
+                                    ));
+                                }
+                            } // else (non-rounded cell border)
                         }
 
                         // Draw cell linear gradient
