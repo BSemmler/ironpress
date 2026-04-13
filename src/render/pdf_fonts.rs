@@ -340,6 +340,7 @@ mod tests {
             padding_right: 0.0,
             padding_bottom: 0.0,
             padding_left: 0.0,
+            border: crate::layout::engine::LayoutBorder::default(),
             border_radius: 0.0,
             background_gradient: None,
             background_radial_gradient: None,
