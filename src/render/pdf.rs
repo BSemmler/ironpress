@@ -2034,6 +2034,8 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                             &prepared_custom_fonts,
                                             &mut page_ext_gstates,
                                             &mut bg_alpha_counter,
+                                            *cont_pl + cont_border.left.width,
+                                            *cont_pt + cont_border.top.width,
                                         );
                                         if clip {
                                             content.push_str("Q\n");
@@ -2218,6 +2220,8 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     }
 
                     // Render children recursively
+                    // Pass both content-box origin (for flow children) and
+                    // padding-box origin (for absolute children).
                     let inner_x = container_x + c_pl + border.left.width;
                     let inner_w = (container_w - c_pl - c_pr - border.horizontal_width()).max(0.0);
                     let inner_y = container_y_top - c_pt - border.top.width;
@@ -2231,6 +2235,8 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         &prepared_custom_fonts,
                         &mut page_ext_gstates,
                         &mut bg_alpha_counter,
+                        *c_pl + border.left.width,
+                        *c_pt + border.top.width,
                     );
 
                     // Restore clip
@@ -2641,6 +2647,10 @@ fn append_tj_shaped_text(content: &mut String, render: ShapedTextRender<'_>) {
 }
 
 /// Recursively render a Container element and all its children.
+///
+/// `x` / `y` are the content-box origin (after padding).
+/// `abs_pad_left` / `abs_pad_top` are the parent padding values so that
+/// absolute-positioned children can be placed relative to the padding box.
 #[allow(clippy::too_many_arguments)]
 fn render_container_children(
     content: &mut String,
@@ -2652,6 +2662,8 @@ fn render_container_children(
     prepared_custom_fonts: &PreparedCustomFonts,
     page_ext_gstates: &mut Vec<(String, f32)>,
     bg_alpha_counter: &mut usize,
+    abs_pad_left: f32,
+    abs_pad_top: f32,
 ) {
     // Separate children into those handled by render_nested_table_rows
     // (TableRow, TextBlock) and those handled directly (Container, Svg, etc.).
@@ -2703,14 +2715,15 @@ fn render_container_children(
                 block_width: tb_block_width,
                 ..
             } => {
-                // Absolute-positioned children render at offset from container origin
+                // Absolute-positioned children render at offset from the
+                // containing block's padding box (CSS spec), not the content box.
                 if *position == Position::Absolute {
                     let text_h: f32 = lines.iter().map(|l| l.height).sum();
                     let abs_h = padding_top + text_h + padding_bottom + border.vertical_width();
                     let abs_h = block_height.map_or(abs_h, |h| abs_h.max(h));
                     let abs_w = tb_block_width.unwrap_or(width);
-                    let abs_x = x + offset_left;
-                    let abs_y = y - offset_top;
+                    let abs_x = (x - abs_pad_left) + offset_left;
+                    let abs_y = (y + abs_pad_top) - offset_top;
 
                     if let Some((r, g, b, a)) = background_color {
                         let needs_alpha = *a < 1.0;
@@ -2968,6 +2981,8 @@ fn render_container_children(
                     prepared_custom_fonts,
                     page_ext_gstates,
                     bg_alpha_counter,
+                    *padding_left + border.left.width,
+                    *padding_top + border.top.width,
                 );
 
                 if clip {
@@ -3186,6 +3201,8 @@ fn render_container_children(
                             prepared_custom_fonts,
                             page_ext_gstates,
                             bg_alpha_counter,
+                            0.0, // flex cells don't have separate padding for abs children
+                            0.0,
                         );
                     }
                     cell_x += cell_w;
