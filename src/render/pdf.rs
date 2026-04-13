@@ -2778,8 +2778,42 @@ fn render_container_children(
                 let svg_x = x;
                 let svg_y = y - svg_h;
                 content.push_str("q\n");
-                content.push_str(&format!("{svg_w} 0 0 {svg_h} {svg_x} {svg_y} cm\n"));
+                // Position on page with Y-flip (SVG y-axis is top-down, PDF is bottom-up)
+                content.push_str(&format!(
+                    "1 0 0 -1 {svg_x} {} cm\n",
+                    svg_y + svg_h
+                ));
+                // Apply viewBox scaling via compute_svg_placement
+                if let Some(placement) =
+                    crate::render::svg_geometry::compute_svg_placement(
+                        tree,
+                        crate::render::svg_geometry::SvgPlacementRequest::from_rect(
+                            0.0, 0.0, *svg_w, *svg_h,
+                            tree.preserve_aspect_ratio,
+                        ),
+                    )
                 {
+                    content.push_str("q\n");
+                    content.push_str(&placement.viewport.clip_path());
+                    content.push_str(&format!(
+                        "{sx} 0 0 {sy} {tx} {ty} cm\n",
+                        sx = placement.scale_x,
+                        sy = placement.scale_y,
+                        tx = placement.translate_x,
+                        ty = placement.translate_y,
+                    ));
+                    {
+                        let mut res = crate::render::svg_to_pdf::SvgPdfResources {
+                            shadings: &mut Vec::new(),
+                            shading_counter: &mut 0,
+                            image_sink: None,
+                        };
+                        crate::render::svg_to_pdf::render_svg_tree_with_resources(
+                            tree, content, &mut res,
+                        );
+                    }
+                    content.push_str("Q\n");
+                } else {
                     let mut res = crate::render::svg_to_pdf::SvgPdfResources {
                         shadings: &mut Vec::new(),
                         shading_counter: &mut 0,
