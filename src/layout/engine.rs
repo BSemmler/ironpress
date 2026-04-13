@@ -156,22 +156,18 @@ fn element_is_inline_block(
             .any(|c| matches!(c, DomNode::Element(e) if e.tag == HtmlTag::Svg))
 }
 
-/// Emit a `FlexRow` for a group of consecutive `display: inline-block` elements.
+/// Lay out a group of consecutive `display: inline-block` elements as `FlexRow`s.
 ///
 /// Each element is laid out independently into its own buffer, then positioned
-/// horizontally in a row, similar to how `flatten_flex_container` works.
-#[allow(clippy::too_many_arguments)]
-fn flush_inline_block_group(
+/// horizontally in a row, similar to how `layout_flex_container` works.
+fn layout_inline_block_group(
     elements: &[&ElementNode],
     parent_style: &ComputedStyle,
     available_width: f32,
-    _available_height: f32,
     output: &mut Vec<LayoutElement>,
     rules: &[CssRule],
     ancestors: &[AncestorInfo],
-    _positioned_ancestor_depth: usize,
     fonts: &HashMap<String, TtfFont>,
-    _counter_state: &mut CounterState,
 ) {
     if elements.is_empty() {
         return;
@@ -1514,29 +1510,23 @@ fn flatten_nodes(
         group: &mut Vec<&ElementNode>,
         parent_style: &ComputedStyle,
         available_width: f32,
-        available_height: f32,
         output: &mut Vec<LayoutElement>,
         rules: &[CssRule],
         ancestors: &[AncestorInfo],
-        positioned_ancestor_depth: usize,
         fonts: &HashMap<String, TtfFont>,
-        counter_state: &mut CounterState,
     ) {
         if group.is_empty() {
             return;
         }
         let taken: Vec<&ElementNode> = group.drain(..).collect();
-        flush_inline_block_group(
+        layout_inline_block_group(
             &taken,
             parent_style,
             available_width,
-            available_height,
             output,
             rules,
             ancestors,
-            positioned_ancestor_depth,
             fonts,
-            counter_state,
         );
     }
 
@@ -1552,13 +1542,10 @@ fn flatten_nodes(
                         &mut ib_group,
                         parent_style,
                         available_width,
-                        available_height,
                         output,
                         list_ctx.map(|_| rules).unwrap_or(rules),
                         ancestors,
-                        positioned_ancestor_depth,
                         fonts,
-                        counter_state,
                     );
                 }
                 if !trimmed.is_empty() {
@@ -1660,13 +1647,10 @@ fn flatten_nodes(
                         &mut ib_group,
                         parent_style,
                         available_width,
-                        available_height,
                         output,
                         rules,
                         ancestors,
-                        positioned_ancestor_depth,
                         fonts,
-                        counter_state,
                     );
                     flatten_element(
                         el,
@@ -1700,13 +1684,10 @@ fn flatten_nodes(
         &mut ib_group,
         parent_style,
         available_width,
-        available_height,
         output,
         rules,
         ancestors,
-        positioned_ancestor_depth,
         fonts,
-        counter_state,
     );
 }
 
@@ -2841,17 +2822,14 @@ fn layout_block_element(
                     if !ib_group_wrapper.is_empty() {
                         #[allow(clippy::drain_collect)]
                         let taken: Vec<&ElementNode> = ib_group_wrapper.drain(..).collect();
-                        flush_inline_block_group(
+                        layout_inline_block_group(
                             &taken,
                             style,
                             inner_width,
-                            available_height,
                             &mut child_elements,
                             rules,
                             child_ancestors,
-                            positioned_depth,
                             fonts,
-                            counter_state,
                         );
                     }
                     if recurses_as_layout_child(child_el.tag) {
@@ -2892,17 +2870,14 @@ fn layout_block_element(
         if !ib_group_wrapper.is_empty() {
             #[allow(clippy::drain_collect)]
             let taken: Vec<&ElementNode> = ib_group_wrapper.drain(..).collect();
-            flush_inline_block_group(
+            layout_inline_block_group(
                 &taken,
                 style,
                 inner_width,
-                available_height,
                 &mut child_elements,
                 rules,
                 child_ancestors,
-                positioned_depth,
                 fonts,
-                counter_state,
             );
         }
         // Measure children total height
@@ -3049,17 +3024,14 @@ fn layout_block_element(
                     if !ib_group.is_empty() {
                         #[allow(clippy::drain_collect)]
                         let taken: Vec<&ElementNode> = ib_group.drain(..).collect();
-                        flush_inline_block_group(
+                        layout_inline_block_group(
                             &taken,
                             style,
                             inner_width,
-                            available_height,
                             output,
                             rules,
                             child_ancestors,
-                            positioned_depth,
                             fonts,
-                            counter_state,
                         );
                     }
                     if recurses_as_layout_child(child_el.tag) {
@@ -3089,17 +3061,14 @@ fn layout_block_element(
         if !ib_group.is_empty() {
             #[allow(clippy::drain_collect)]
             let taken: Vec<&ElementNode> = ib_group.drain(..).collect();
-            flush_inline_block_group(
+            layout_inline_block_group(
                 &taken,
                 style,
                 inner_width,
-                available_height,
                 output,
                 rules,
                 child_ancestors,
-                positioned_depth,
                 fonts,
-                counter_state,
             );
         }
     }
