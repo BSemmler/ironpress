@@ -3056,6 +3056,49 @@ fn render_container_children(
                             content.push_str("/GSDefault gs\n");
                         }
                     }
+                    // Draw cell border
+                    if cell.border.has_any() {
+                        let bx1 = cell_x;
+                        let bx2 = cell_x + cell_w;
+                        let by1 = y;
+                        let by2 = y - row_h;
+                        if cell.border.left.width > 0.0 {
+                            let (r, g, b) = cell.border.left.color;
+                            content.push_str(&format!(
+                                "{r} {g} {b} RG\n{bw} w\n{x} {y1} m {x} {y2} l\nS\n",
+                                bw = cell.border.left.width,
+                                x = bx1 + cell.border.left.width * 0.5,
+                                y1 = by1, y2 = by2
+                            ));
+                        }
+                        if cell.border.right.width > 0.0 {
+                            let (r, g, b) = cell.border.right.color;
+                            content.push_str(&format!(
+                                "{r} {g} {b} RG\n{bw} w\n{x} {y1} m {x} {y2} l\nS\n",
+                                bw = cell.border.right.width,
+                                x = bx2 - cell.border.right.width * 0.5,
+                                y1 = by1, y2 = by2
+                            ));
+                        }
+                        if cell.border.top.width > 0.0 {
+                            let (r, g, b) = cell.border.top.color;
+                            content.push_str(&format!(
+                                "{r} {g} {b} RG\n{bw} w\n{x1} {y} m {x2} {y} l\nS\n",
+                                bw = cell.border.top.width,
+                                x1 = bx1, x2 = bx2,
+                                y = by1 - cell.border.top.width * 0.5
+                            ));
+                        }
+                        if cell.border.bottom.width > 0.0 {
+                            let (r, g, b) = cell.border.bottom.color;
+                            content.push_str(&format!(
+                                "{r} {g} {b} RG\n{bw} w\n{x1} {y} m {x2} {y} l\nS\n",
+                                bw = cell.border.bottom.width,
+                                x1 = bx1, x2 = bx2,
+                                y = by2 + cell.border.bottom.width * 0.5
+                            ));
+                        }
+                    }
                     // Draw cell text
                     let mut text_y = content_y;
                     for line in &cell.lines {
