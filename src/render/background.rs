@@ -610,7 +610,7 @@ pub(crate) fn register_background_image(
     href: &str,
     request: Option<RasterBackgroundRequest>,
 ) -> Option<RegisteredBackgroundImage> {
-    let (raw, _mime) = crate::layout::engine::load_src_bytes(href)?;
+    let (raw, _mime) = crate::layout::images::load_src_bytes(href)?;
     let (obj_id, draw_box) =
         if let Some(request) = request.filter(|request| request.blur_radius > 0.0) {
             let (encoded, draw_box) = encode_blurred_png_for_background(&raw, request)?;
