@@ -3471,6 +3471,142 @@ fn render_nested_table_rows(
                 }
                 cursor_y -= row_height;
             }
+            LayoutElement::GridRow {
+                cells,
+                col_widths,
+                gap,
+                border: grid_border,
+                padding_left: grid_pl,
+                padding_right: grid_pr,
+                padding_top: grid_pt,
+                padding_bottom: grid_pb,
+                margin_top,
+                ..
+            } => {
+                cursor_y -= margin_top;
+                let row_y = cursor_y;
+                let row_height = compute_row_height(cells) + grid_pt + grid_pb;
+                let grid_total_w: f32 = col_widths.iter().sum::<f32>()
+                    + gap * col_widths.len().saturating_sub(1) as f32
+                    + grid_pl
+                    + grid_pr;
+
+                // Draw grid container border
+                if grid_border.has_any() {
+                    let bx1 = origin_x;
+                    let bx2 = origin_x + grid_total_w;
+                    let by1 = row_y;
+                    let by2 = row_y - row_height;
+                    if grid_border.top.width > 0.0 {
+                        let (r, g, b) = grid_border.top.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx2} {by1} l S\n",
+                            grid_border.top.width
+                        ));
+                    }
+                    if grid_border.right.width > 0.0 {
+                        let (r, g, b) = grid_border.right.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx2} {by1} m {bx2} {by2} l S\n",
+                            grid_border.right.width
+                        ));
+                    }
+                    if grid_border.bottom.width > 0.0 {
+                        let (r, g, b) = grid_border.bottom.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx1} {by2} m {bx2} {by2} l S\n",
+                            grid_border.bottom.width
+                        ));
+                    }
+                    if grid_border.left.width > 0.0 {
+                        let (r, g, b) = grid_border.left.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx1} {by2} l S\n",
+                            grid_border.left.width
+                        ));
+                    }
+                }
+
+                let mut cell_x = origin_x + grid_pl;
+                let cell_row_y = row_y - grid_pt;
+                let cell_content_h = compute_row_height(cells);
+                for (i, cell) in cells.iter().enumerate() {
+                    let cell_w = if i < col_widths.len() {
+                        col_widths[i]
+                    } else {
+                        0.0
+                    };
+
+                    // Draw cell background
+                    if let Some((r, g, b, a)) = cell.background_color {
+                        let needs_alpha = a < 1.0;
+                        if needs_alpha {
+                            let gs_name = format!("GScca{bg_alpha_counter}");
+                            *bg_alpha_counter += 1;
+                            page_ext_gstates.push((gs_name.clone(), a));
+                            content.push_str(&format!("/{gs_name} gs\n"));
+                        }
+                        content.push_str(&format!(
+                            "{r} {g} {b} rg\n{x} {y} {w} {h} re\nf\n",
+                            x = cell_x,
+                            y = cell_row_y - cell_content_h,
+                            w = cell_w,
+                            h = cell_content_h,
+                        ));
+                        if needs_alpha {
+                            content.push_str("/GSDefault gs\n");
+                        }
+                    }
+
+                    // Render cell text
+                    let cell_inner_w = cell_w - cell.padding_left - cell.padding_right;
+                    let mut text_y = cell_row_y - cell.padding_top;
+                    for line in &cell.lines {
+                        let metrics = line_box_metrics(line, custom_fonts);
+                        text_y -= metrics.half_leading + metrics.ascender;
+                        let text_content: String =
+                            line.runs.iter().map(|run| run.text.as_str()).collect();
+                        if text_content.is_empty() {
+                            continue;
+                        }
+                        let merged = merge_runs(&line.runs);
+                        let line_width: f32 = merged
+                            .iter()
+                            .map(|run| estimate_run_width_with_fonts(run, custom_fonts))
+                            .sum();
+                        let text_x = match cell.text_align {
+                            TextAlign::Right => {
+                                cell_x + cell.padding_left + (cell_inner_w - line_width).max(0.0)
+                            }
+                            TextAlign::Center => {
+                                cell_x
+                                    + cell.padding_left
+                                    + ((cell_inner_w - line_width) / 2.0).max(0.0)
+                            }
+                            _ => cell_x + cell.padding_left,
+                        };
+                        let mut lx = text_x;
+                        for run in &merged {
+                            if run.text.is_empty() {
+                                continue;
+                            }
+                            let rw = render_run_text(
+                                content,
+                                run,
+                                lx,
+                                text_y,
+                                custom_fonts,
+                                prepared_custom_fonts,
+                            );
+                            lx += rw;
+                        }
+                        text_y -= metrics.descender + metrics.half_leading;
+                    }
+
+                    cell_x += cell_w + gap;
+                }
+                cursor_y -= row_height;
+            }
             _ => {
                 cursor_y -= crate::layout::engine::estimate_element_height(element);
             }

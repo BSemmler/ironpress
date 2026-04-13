@@ -5439,6 +5439,7 @@ fn flatten_grid_container(
     // Lay out children into grid cells, row by row
     let mut child_idx = 0;
     let mut is_first_row = true;
+    let mut grid_children: Vec<LayoutElement> = Vec::new();
 
     while child_idx < children.len() {
         let row_end = (child_idx + num_cols).min(children.len());
@@ -5532,30 +5533,18 @@ fn flatten_grid_container(
             });
         }
 
-        let margin_top = if is_first_row { style.margin.top } else { gap };
+        let margin_top = if is_first_row { 0.0 } else { gap };
 
-        output.push(LayoutElement::GridRow {
+        grid_children.push(LayoutElement::GridRow {
             cells,
             col_widths: col_widths.clone(),
             gap,
             margin_top,
             margin_bottom: 0.0,
-            border: if is_first_row {
-                LayoutBorder::from_computed(&style.border)
-            } else {
-                LayoutBorder::default()
-            },
-            padding_left: if is_first_row {
-                style.padding.left
-            } else {
-                0.0
-            },
-            padding_right: if is_first_row {
-                style.padding.right
-            } else {
-                0.0
-            },
-            padding_top: if is_first_row { style.padding.top } else { 0.0 },
+            border: LayoutBorder::default(),
+            padding_left: 0.0,
+            padding_right: 0.0,
+            padding_top: 0.0,
             padding_bottom: 0.0,
         });
 
@@ -5563,16 +5552,51 @@ fn flatten_grid_container(
         child_idx = row_end;
     }
 
-    // Add bottom margin and padding after the last row
-    if let Some(LayoutElement::GridRow {
-        margin_bottom,
-        padding_bottom,
-        ..
-    }) = output.last_mut()
-    {
-        *margin_bottom = style.margin.bottom;
-        *padding_bottom = style.padding.bottom;
-    }
+    // Wrap all grid rows in a Container that carries the border, padding,
+    // and background of the grid container element.
+    let bg = style
+        .background_color
+        .map(|c: crate::types::Color| c.to_f32_rgba());
+    let BackgroundFields {
+        gradient: background_gradient,
+        radial_gradient: background_radial_gradient,
+        svg: background_svg,
+        blur_radius: background_blur_radius,
+        size: background_size,
+        position: background_position,
+        repeat: background_repeat,
+        origin: background_origin,
+    } = BackgroundFields::from_style(style);
+    output.push(LayoutElement::Container {
+        children: grid_children,
+        background_color: bg,
+        border: LayoutBorder::from_computed(&style.border),
+        border_radius: style.border_radius,
+        padding_top: style.padding.top,
+        padding_bottom: style.padding.bottom,
+        padding_left: style.padding.left,
+        padding_right: style.padding.right,
+        margin_top: style.margin.top,
+        margin_bottom: style.margin.bottom,
+        block_width: Some(inner_width + style.padding.left + style.padding.right),
+        block_height: None,
+        opacity: style.opacity,
+        position: style.position,
+        offset_top: 0.0,
+        offset_left: 0.0,
+        overflow: style.overflow,
+        transform: style.transform,
+        box_shadow: style.box_shadow,
+        background_gradient,
+        background_radial_gradient,
+        background_svg,
+        background_blur_radius,
+        background_size,
+        background_position,
+        background_repeat,
+        background_origin,
+        z_index: style.z_index,
+    });
 }
 
 /// Parse a width for a `<col>` / `<colgroup>` element.
@@ -11118,6 +11142,21 @@ mod tests {
 
     // --- CSS Grid tests ---
 
+    /// Helper: extract GridRow elements from inside a Container child on page 0.
+    fn extract_grid_rows(pages: &[Page]) -> Vec<&LayoutElement> {
+        let mut rows = Vec::new();
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::Container { children, .. } = el {
+                for child in children {
+                    if matches!(child, LayoutElement::GridRow { .. }) {
+                        rows.push(child);
+                    }
+                }
+            }
+        }
+        rows
+    }
+
     #[test]
     fn grid_three_column_places_items_correctly() {
         let html = r#"<div style="display: grid; grid-template-columns: 1fr 1fr 1fr">
@@ -11131,10 +11170,10 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout(&nodes, PageSize::A4, Margin::default());
 
-        let grid_rows: Vec<_> = pages[0]
-            .elements
+        let rows = extract_grid_rows(&pages);
+        let grid_rows: Vec<_> = rows
             .iter()
-            .filter_map(|(_, el)| {
+            .filter_map(|el| {
                 if let LayoutElement::GridRow {
                     cells, col_widths, ..
                 } = el
@@ -11176,10 +11215,10 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout(&nodes, PageSize::A4, Margin::default());
 
-        let grid_rows: Vec<_> = pages[0]
-            .elements
+        let rows = extract_grid_rows(&pages);
+        let grid_rows: Vec<_> = rows
             .iter()
-            .filter_map(|(_, el)| {
+            .filter_map(|el| {
                 if let LayoutElement::GridRow {
                     cells, col_widths, ..
                 } = el
@@ -11222,10 +11261,10 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout(&nodes, PageSize::A4, Margin::default());
 
-        let grid_rows: Vec<_> = pages[0]
-            .elements
+        let rows = extract_grid_rows(&pages);
+        let grid_rows: Vec<_> = rows
             .iter()
-            .filter_map(|(_, el)| {
+            .filter_map(|el| {
                 if let LayoutElement::GridRow { col_widths, .. } = el {
                     Some(col_widths)
                 } else {
@@ -11257,10 +11296,10 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout(&nodes, PageSize::A4, Margin::default());
 
-        let grid_rows: Vec<_> = pages[0]
-            .elements
+        let rows = extract_grid_rows(&pages);
+        let grid_rows: Vec<_> = rows
             .iter()
-            .filter_map(|(_, el)| {
+            .filter_map(|el| {
                 if let LayoutElement::GridRow {
                     col_widths,
                     margin_top,
@@ -11307,10 +11346,10 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout(&nodes, PageSize::A4, Margin::default());
 
-        let grid_rows: Vec<_> = pages[0]
-            .elements
+        let rows = extract_grid_rows(&pages);
+        let grid_rows: Vec<_> = rows
             .iter()
-            .filter_map(|(_, el)| {
+            .filter_map(|el| {
                 if let LayoutElement::GridRow { cells, .. } = el {
                     Some(cells)
                 } else {
@@ -11368,10 +11407,10 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout(&nodes, PageSize::A4, Margin::default());
 
-        let grid_rows: Vec<_> = pages[0]
-            .elements
+        let rows = extract_grid_rows(&pages);
+        let grid_rows: Vec<_> = rows
             .iter()
-            .filter_map(|(_, el)| {
+            .filter_map(|el| {
                 if let LayoutElement::GridRow { margin_top, .. } = el {
                     Some(*margin_top)
                 } else {
@@ -11398,10 +11437,10 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout_with_rules(&nodes, PageSize::A4, Margin::default(), &rules);
 
-        let grid_rows: Vec<_> = pages[0]
-            .elements
+        let rows = extract_grid_rows(&pages);
+        let grid_rows: Vec<_> = rows
             .iter()
-            .filter_map(|(_, el)| {
+            .filter_map(|el| {
                 if let LayoutElement::GridRow {
                     cells, col_widths, ..
                 } = el
@@ -11434,10 +11473,10 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout(&nodes, PageSize::A4, Margin::default());
 
-        let grid_rows: Vec<_> = pages[0]
-            .elements
+        let rows = extract_grid_rows(&pages);
+        let grid_rows: Vec<_> = rows
             .iter()
-            .filter_map(|(_, el)| {
+            .filter_map(|el| {
                 if let LayoutElement::GridRow {
                     cells, col_widths, ..
                 } = el
@@ -13181,14 +13220,19 @@ mod tests {
         let html = r#"<div class="grid"><div>A</div><div>B</div><div>C</div><div>D</div></div>"#;
         let nodes = parse_html(html).unwrap();
         let pages = layout_with_rules(&nodes, PageSize::A4, Margin::default(), &rules);
-        let grid_rows: Vec<_> = pages[0]
-            .elements
-            .iter()
-            .filter(|(_, el)| matches!(el, LayoutElement::GridRow { .. }))
-            .collect();
+        // Grid rows are now inside a Container wrapper
+        let has_grid_container = pages[0].elements.iter().any(|(_, el)| {
+            if let LayoutElement::Container { children, .. } = el {
+                children
+                    .iter()
+                    .any(|c| matches!(c, LayoutElement::GridRow { .. }))
+            } else {
+                false
+            }
+        });
         assert!(
-            !grid_rows.is_empty(),
-            "Expected GridRow elements from display: grid layout"
+            has_grid_container,
+            "Expected Container with GridRow children from display: grid layout"
         );
     }
 
@@ -13303,18 +13347,11 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout_with_rules(&nodes, PageSize::A4, Margin::default(), &rules);
         assert_eq!(pages.len(), 1);
-        let grid_rows: Vec<_> = pages[0]
-            .elements
-            .iter()
-            .filter(|(_, el)| matches!(el, LayoutElement::GridRow { .. }))
-            .collect();
+        let grid_rows = extract_grid_rows(&pages);
         assert!(
             !grid_rows.is_empty(),
             "Expected GridRow elements from grid layout"
         );
-        for (y, _) in &grid_rows {
-            assert!(*y >= 0.0, "Grid row y position should be non-negative");
-        }
     }
 
     #[test]
