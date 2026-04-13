@@ -8524,8 +8524,19 @@ fn resolve_svg_dimension(
         return None;
     }
 
+    // SVG width/height attributes are in CSS px by default.
+    // Values with explicit "pt" suffix stay as-is; otherwise convert px→pt.
+    if raw.ends_with("pt") {
+        let value = crate::parser::svg::parse_length(raw)?;
+        return if value >= 0.0 { Some(value) } else { None };
+    }
     let value = crate::parser::svg::parse_length(raw)?;
-    if value >= 0.0 { Some(value) } else { None }
+    if value >= 0.0 {
+        // Convert px to pt (1px = 0.75pt)
+        Some(value * 0.75)
+    } else {
+        None
+    }
 }
 
 fn sync_svg_tree_to_layout_box(tree: &mut crate::parser::svg::SvgTree, width: f32, height: f32) {
@@ -8913,7 +8924,7 @@ mod tests {
 
         assert_eq!(
             resolve_svg_size(&tree, 400.0, 400.0, false, false),
-            (120.0, 60.0)
+            (90.0, 45.0)
         );
     }
 
@@ -8939,7 +8950,7 @@ mod tests {
 
         assert_eq!(
             resolve_svg_size(&tree, 400.0, 400.0, false, false),
-            (120.0, 60.0)
+            (90.0, 45.0)
         );
     }
 
@@ -8965,7 +8976,7 @@ mod tests {
 
         assert_eq!(
             resolve_svg_size(&tree, 400.0, 400.0, false, false),
-            (120.0, 60.0)
+            (90.0, 45.0)
         );
     }
 
@@ -8991,7 +9002,7 @@ mod tests {
 
         assert_eq!(
             resolve_svg_size(&tree, 400.0, 400.0, false, false),
-            (120.0, 60.0)
+            (90.0, 45.0)
         );
     }
 
@@ -9033,7 +9044,7 @@ mod tests {
 
         assert_eq!(
             resolve_svg_size(&tree, 400.0, 400.0, true, false),
-            (120.0, 60.0)
+            (120.0, 60.0) // falls back to intrinsic size (already in pt)
         );
     }
 
@@ -9060,8 +9071,8 @@ mod tests {
             None
         }
         let svg = find_svg(&pages[0].elements).expect("expected nested svg element");
-        assert!((svg.0 - 100.0).abs() < 0.1);
-        assert!((svg.1 - 100.0).abs() < 0.1);
+        assert!((svg.0 - 75.0).abs() < 0.1);  // 100px = 75pt
+        assert!((svg.1 - 100.0).abs() < 0.1); // 50% of 200pt = 100pt
     }
 
     #[test]
@@ -9127,8 +9138,8 @@ mod tests {
                 _ => None,
             })
             .expect("expected svg layout element");
-        assert_eq!(svg.1, 200.0);
-        assert_eq!(svg.2, 100.0);
+        assert_eq!(svg.1, 150.0);  // 200px = 150pt
+        assert_eq!(svg.2, 75.0);   // 100px = 75pt
         assert!(
             svg.0.view_box.is_some(),
             "renderer should keep viewBox metadata"
