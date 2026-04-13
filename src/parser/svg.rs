@@ -230,9 +230,20 @@ pub enum SvgNode {
         font_bold: Option<bool>,
         /// Per-element font-style override (true = italic/oblique).
         font_italic: Option<bool>,
+        /// SVG text-anchor: "start" (default), "middle", or "end".
+        text_anchor: SvgTextAnchor,
         content: String,
         style: SvgStyle,
     },
+}
+
+/// SVG text-anchor property.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum SvgTextAnchor {
+    #[default]
+    Start,
+    Middle,
+    End,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -725,6 +736,11 @@ fn parse_svg_node_with_viewport(
             let (font_family, font_bold, font_italic) = parse_svg_font_attrs(el);
             let content = collect_text_content(el);
             let style = parse_svg_style(el);
+            let text_anchor = match el.attributes.get("text-anchor").map(|s| s.as_str()) {
+                Some("middle") => SvgTextAnchor::Middle,
+                Some("end") => SvgTextAnchor::End,
+                _ => SvgTextAnchor::Start,
+            };
             Some(SvgNode::Text {
                 x,
                 y,
@@ -735,6 +751,7 @@ fn parse_svg_node_with_viewport(
                 font_family,
                 font_bold,
                 font_italic,
+                text_anchor,
                 content,
                 style,
             })

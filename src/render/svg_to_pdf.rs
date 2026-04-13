@@ -2,7 +2,7 @@
 
 use crate::parser::svg::{
     PathCommand, SvgClipPathUnits, SvgGradientUnits, SvgLinearGradient, SvgNode, SvgPaint,
-    SvgRadialGradient, SvgStyle, SvgTextContext, SvgTransform, SvgTree,
+    SvgRadialGradient, SvgStyle, SvgTextAnchor, SvgTextContext, SvgTransform, SvgTree,
 };
 use crate::render::pdf::encode_pdf_text;
 use crate::render::shading::{ShadingEntry, push_axial_shading, push_radial_shading};
@@ -390,6 +390,7 @@ fn render_node(
             font_family,
             font_bold,
             font_italic,
+            text_anchor,
             content,
             style,
         } => {
@@ -439,6 +440,20 @@ fn render_node(
                 (false, false) => 3,
             };
 
+            // Adjust x for text-anchor
+            let text_x = match text_anchor {
+                SvgTextAnchor::Start => *x,
+                SvgTextAnchor::Middle | SvgTextAnchor::End => {
+                    let (ff, is_bold) = font_metrics_font(&font);
+                    let text_w = crate::fonts::str_width(content, size, &ff, is_bold);
+                    if *text_anchor == SvgTextAnchor::Middle {
+                        x - text_w * 0.5
+                    } else {
+                        x - text_w
+                    }
+                }
+            };
+
             out.push_str("BT\n");
             out.push_str(&format!("/{font} {size} Tf\n"));
             out.push_str(&format!("{text_render_mode} Tr\n"));
@@ -449,7 +464,7 @@ fn render_node(
                 out.push_str(&format!("{r} {g} {b} RG\n"));
                 out.push_str(&format!("{} w\n", style.stroke_width));
             }
-            out.push_str(&format!("1 0 0 -1 {x} {y} Tm\n"));
+            out.push_str(&format!("1 0 0 -1 {text_x} {y} Tm\n"));
             let encoded = encode_pdf_text(content);
             out.push_str(&format!("({encoded}) Tj\n"));
             out.push_str("ET\n");
@@ -1701,6 +1716,7 @@ mod tests {
             font_family: Some("Helvetica".to_string()),
             font_bold: Some(false),
             font_italic: Some(false),
+                text_anchor: SvgTextAnchor::Start,
             content: text.to_string(),
             style: SvgStyle {
                 clip_path: Some("clip".to_string()),
@@ -2779,6 +2795,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -2831,6 +2848,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -2887,6 +2905,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle::default(),
             }],
@@ -2924,6 +2943,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -2971,6 +2991,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -3023,6 +3044,7 @@ mod tests {
                     font_family: None,
                     font_bold: None,
                     font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                     content: "Hello".to_string(),
                     style: SvgStyle {
                         fill: SvgPaint::CurrentColor,
@@ -3061,6 +3083,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle {
                     color: None,
@@ -3111,6 +3134,7 @@ mod tests {
                     font_family: None,
                     font_bold: None,
                     font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                     content: "Hello".to_string(),
                     style: SvgStyle {
                         fill: SvgPaint::CurrentColor,
@@ -3149,6 +3173,7 @@ mod tests {
                 font_family: None,
                 font_bold: None,
                 font_italic: None,
+                text_anchor: SvgTextAnchor::Start,
                 content: "Hello".to_string(),
                 style: SvgStyle::default(),
             }],
