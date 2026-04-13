@@ -2628,6 +2628,7 @@ fn render_container_children(
                 margin_top,
                 margin_bottom,
                 block_width,
+                block_height: nk_block_height,
                 overflow,
                 ..
             } => {
@@ -2638,8 +2639,10 @@ fn render_container_children(
                     .iter()
                     .map(crate::layout::engine::estimate_element_height)
                     .sum();
-                let nk_total_h =
+                let nk_content_h =
                     padding_top + nk_children_h + padding_bottom + border.vertical_width();
+                let nk_total_h =
+                    nk_block_height.map_or(nk_content_h, |h| nk_content_h.max(h));
 
                 // Draw background with proper alpha support
                 if let Some((r, g, b, a)) = background_color {
