@@ -1756,6 +1756,11 @@ fn flatten_element(
     counter_state.apply_resets(&style.counter_reset);
     counter_state.apply_increments(&style.counter_increment);
 
+    // Bail out on excessively deep nesting to prevent stack overflow.
+    if ancestors.len() > 30 {
+        return;
+    }
+
     let available_height = style.height.unwrap_or(available_height);
     let positioned_depth =
         if style.position == Position::Relative || style.position == Position::Absolute {
@@ -2894,7 +2899,11 @@ fn flatten_element(
             || style.border.has_any()
             || style.border_radius > 0.0
             || style.box_shadow.is_some();
-        let has_block_kids_for_wrapper = early_has_visual
+        // Limit nesting depth to prevent stack overflow on deeply nested HTML.
+        // Beyond depth 40, fall back to flat text collection instead of Containers.
+        let nesting_depth = ancestors.len();
+        let has_block_kids_for_wrapper = nesting_depth < 40
+            && early_has_visual
             && el.children.iter().any(|c| {
                 matches!(c, DomNode::Element(e)
                     if (e.tag.is_block() || e.tag == HtmlTag::Svg)
@@ -3553,7 +3562,8 @@ fn flatten_element(
             || (positioned_container && (before_is_abs || after_is_abs));
         let no_inline_content = !had_inline_runs;
 
-        if (no_inline_content || has_block_kids_for_wrapper) && needs_wrapper {
+        if (no_inline_content || has_block_kids_for_wrapper) && needs_wrapper && nesting_depth < 40
+        {
             // Pre-flatten children to measure total height.
             // If there's saved inline content, include it as the first child.
             let mut child_elements: Vec<LayoutElement> = Vec::new();
