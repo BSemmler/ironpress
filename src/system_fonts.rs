@@ -185,6 +185,19 @@ pub(crate) fn resolve_font_family(
 
 /// Key used to store the Unicode fallback font in the font map.
 pub(crate) const UNICODE_FALLBACK_KEY: &str = "__unicode_fallback";
+pub(crate) const EMOJI_FALLBACK_KEY: &str = "__emoji_fallback";
+
+/// Candidate font families for emoji rendering.
+const EMOJI_FALLBACK_FAMILIES: &[&str] = &[
+    "Apple Color Emoji",
+    "Noto Color Emoji",
+    "Noto Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol",
+    "Symbola",
+    "EmojiOne",
+    "Twitter Color Emoji",
+];
 
 /// Candidate font families to try when looking for a Unicode fallback font.
 /// Ordered by breadth of Unicode coverage (CJK, symbols, etc.).
@@ -227,6 +240,26 @@ pub(crate) fn load_unicode_fallback_font(fonts: &mut HashMap<String, TtfFont>) {
         if let Some(font) = query_fontdb_font(&db, &query).or_else(|| query_fontconfig_font(&query))
         {
             fonts.insert(UNICODE_FALLBACK_KEY.to_string(), font);
+            return;
+        }
+    }
+}
+
+/// Load a system emoji font for emoji character rendering.
+/// Registered under [`EMOJI_FALLBACK_KEY`].
+pub(crate) fn load_emoji_fallback_font(fonts: &mut HashMap<String, TtfFont>) {
+    if fonts.contains_key(EMOJI_FALLBACK_KEY) {
+        return;
+    }
+
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+
+    for family in EMOJI_FALLBACK_FAMILIES {
+        let query = SystemFontQuery::new(family, FontVariant::new(false, false));
+        if let Some(font) = query_fontdb_font(&db, &query).or_else(|| query_fontconfig_font(&query))
+        {
+            fonts.insert(EMOJI_FALLBACK_KEY.to_string(), font);
             return;
         }
     }
