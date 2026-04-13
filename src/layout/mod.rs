@@ -2,6 +2,7 @@ pub mod context;
 pub mod engine;
 pub(crate) mod flex;
 pub(crate) mod grid;
+pub(crate) mod helpers;
 pub(crate) mod images;
 pub(crate) mod inline;
 pub mod math;
