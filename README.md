@@ -4,6 +4,9 @@ Pure Rust HTML/CSS/Markdown to PDF converter. No browser, no system dependencies
 
 <img width="2480" height="1333" alt="4" src="https://github.com/user-attachments/assets/e8b569e6-e74c-4c0f-9e84-05cf37fae3ae" />
 
+
+<div align="center">
+
 [![Crates.io](https://img.shields.io/crates/v/ironpress.svg)](https://crates.io/crates/ironpress)
 [![npm](https://img.shields.io/npm/v/ironpress.svg)](https://www.npmjs.com/package/ironpress)
 [![docs.rs](https://docs.rs/ironpress/badge.svg)](https://docs.rs/ironpress)
@@ -18,6 +21,8 @@ Pure Rust HTML/CSS/Markdown to PDF converter. No browser, no system dependencies
 [![Parity](https://img.shields.io/badge/parity-dashboard-ff69b4.svg)](https://gastongouron.github.io/ironpress/parity/)
 
 **[Try it in your browser](https://gastongouron.github.io/ironpress/)** | **[Parity dashboard](https://gastongouron.github.io/ironpress/parity/)** | **[Wiki](../../wiki)**
+
+</div>
 
 ## Performance
 

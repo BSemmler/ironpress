@@ -3994,15 +3994,54 @@ fn flatten_element(
         PseudoElement::After,
     );
 
+    route_element(
+        el,
+        &mut style,
+        available_width,
+        available_height,
+        output,
+        rules,
+        ancestors,
+        &child_ancestors,
+        positioned_depth,
+        fonts,
+        abs_containing_block,
+        counter_state,
+        before_style,
+        after_style,
+    );
+}
+
+/// Dispatch an element to the appropriate layout function based on its
+/// computed `display` value (flex, grid, block, inline-block, or inline).
+///
+/// Handles page-break-after emission and CSS counter cleanup.
+#[allow(clippy::too_many_arguments)]
+fn route_element(
+    el: &ElementNode,
+    style: &mut ComputedStyle,
+    available_width: f32,
+    available_height: f32,
+    output: &mut Vec<LayoutElement>,
+    rules: &[CssRule],
+    ancestors: &[AncestorInfo],
+    child_ancestors: &[AncestorInfo],
+    positioned_depth: usize,
+    fonts: &HashMap<String, TtfFont>,
+    abs_containing_block: Option<ContainingBlock>,
+    counter_state: &mut CounterState,
+    before_style: Option<ComputedStyle>,
+    after_style: Option<ComputedStyle>,
+) {
     // Flex container handling
     if style.display == Display::Flex {
         layout_flex_container(
             el,
-            &style,
+            style,
             available_width,
             output,
             rules,
-            &child_ancestors,
+            child_ancestors,
             fonts,
             before_style.as_ref(),
             after_style.as_ref(),
@@ -4020,11 +4059,11 @@ fn flatten_element(
     if style.display == Display::Grid {
         layout_grid_container(
             el,
-            &style,
+            style,
             available_width,
             output,
             rules,
-            &child_ancestors,
+            child_ancestors,
             fonts,
         );
 
@@ -4048,7 +4087,7 @@ fn flatten_element(
                 available_width,
                 output,
                 rules,
-                &child_ancestors,
+                child_ancestors,
                 fonts,
             );
 
@@ -4062,13 +4101,13 @@ fn flatten_element(
     if style.display == Display::Block || style.display == Display::InlineBlock {
         let early_exit = layout_block_element(
             el,
-            &mut style,
+            style,
             available_width,
             available_height,
             output,
             rules,
             ancestors,
-            &child_ancestors,
+            child_ancestors,
             positioned_depth,
             fonts,
             abs_containing_block,
@@ -4083,13 +4122,13 @@ fn flatten_element(
         // Inline element — process children with this style context
         flatten_nodes(
             &el.children,
-            &style,
+            style,
             available_width,
             available_height,
             output,
             None,
             rules,
-            &child_ancestors,
+            child_ancestors,
             positioned_depth,
             fonts,
             None,
