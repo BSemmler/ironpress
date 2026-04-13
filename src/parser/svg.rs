@@ -104,6 +104,7 @@ pub struct ViewBox {
 #[derive(Debug, Clone, Default)]
 pub struct SvgDefs {
     pub gradients: std::collections::HashMap<String, SvgLinearGradient>,
+    pub radial_gradients: std::collections::HashMap<String, SvgRadialGradient>,
     pub clip_paths: std::collections::HashMap<String, SvgClipPath>,
 }
 
@@ -113,6 +114,18 @@ pub struct SvgLinearGradient {
     pub y1: f32,
     pub x2: f32,
     pub y2: f32,
+    pub gradient_units: SvgGradientUnits,
+    pub gradient_transform: Option<SvgTransform>,
+    pub stops: Vec<SvgGradientStop>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SvgRadialGradient {
+    pub cx: f32,
+    pub cy: f32,
+    pub r: f32,
+    pub fx: f32,
+    pub fy: f32,
     pub gradient_units: SvgGradientUnits,
     pub gradient_transform: Option<SvgTransform>,
     pub stops: Vec<SvgGradientStop>,
@@ -490,6 +503,13 @@ fn parse_svg_defs(defs_raw: &HashMap<String, ElementNode>) -> SvgDefs {
                     defs.gradients.insert(id, gradient);
                 }
             }
+            "radialgradient" => {
+                if let Some(id) = el.attributes.get("id").cloned()
+                    && let Some(gradient) = parse_svg_radial_gradient(el)
+                {
+                    defs.radial_gradients.insert(id, gradient);
+                }
+            }
             "clippath" => {
                 if let Some(id) = el.attributes.get("id").cloned()
                     && let Some(clip_path) = parse_svg_clip_path(el, defs_raw)
@@ -777,6 +797,50 @@ fn parse_svg_linear_gradient(el: &ElementNode) -> Option<SvgLinearGradient> {
         y1,
         x2,
         y2,
+        gradient_units,
+        gradient_transform,
+        stops,
+    })
+}
+
+fn parse_svg_radial_gradient(el: &ElementNode) -> Option<SvgRadialGradient> {
+    let cx = parse_svg_gradient_coordinate(el.attributes.get("cx"), 0.5);
+    let cy = parse_svg_gradient_coordinate(el.attributes.get("cy"), 0.5);
+    let r = parse_svg_gradient_coordinate(el.attributes.get("r"), 0.5);
+    let fx = parse_svg_gradient_coordinate(el.attributes.get("fx"), cx);
+    let fy = parse_svg_gradient_coordinate(el.attributes.get("fy"), cy);
+    let gradient_units = match el.attributes.get("gradientUnits").map(String::as_str) {
+        Some(val) if val.eq_ignore_ascii_case("userSpaceOnUse") => SvgGradientUnits::UserSpaceOnUse,
+        Some(val) if val.eq_ignore_ascii_case("objectBoundingBox") => {
+            SvgGradientUnits::ObjectBoundingBox
+        }
+        _ => SvgGradientUnits::default(),
+    };
+    let gradient_transform = el
+        .attributes
+        .get("gradientTransform")
+        .and_then(|v| parse_transform(v));
+    let stops = el
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            DomNode::Element(stop) if stop.raw_tag_name.eq_ignore_ascii_case("stop") => {
+                parse_svg_gradient_stop(stop)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    if stops.len() < 2 {
+        return None;
+    }
+
+    Some(SvgRadialGradient {
+        cx,
+        cy,
+        r,
+        fx,
+        fy,
         gradient_units,
         gradient_transform,
         stops,
