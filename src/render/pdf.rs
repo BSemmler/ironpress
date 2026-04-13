@@ -1898,7 +1898,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     margin_top: _,
                     margin_bottom: _,
                     block_width,
-                    block_height: _,
+                    block_height: c_block_height,
                     opacity: _,
                     position: _,
                     offset_top: _,
@@ -1915,12 +1915,13 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     let container_y_top = page_size.height - margin.top - y_pos;
                     let container_w = block_width.unwrap_or(available_width);
 
-                    // Compute content height from children
+                    // Use explicit block_height if set, otherwise compute from children
                     let children_h: f32 = children
                         .iter()
                         .map(crate::layout::engine::estimate_element_height)
                         .sum();
-                    let total_h = c_pt + children_h + c_pb + border.vertical_width();
+                    let content_h = c_pt + children_h + c_pb + border.vertical_width();
+                    let total_h = c_block_height.map_or(content_h, |h| content_h.max(h));
 
                     // Draw background
                     if let Some((r, g, b, a)) = background_color {
