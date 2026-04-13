@@ -7460,6 +7460,16 @@ fn wrap_text_runs(
     let mut current_width: f32 = 0.0;
     let mut line_height = options.default_font_size * line_height_factor;
 
+    // Apply BiDi reordering if the text contains RTL characters.
+    // This reorders runs into visual order so RTL segments display correctly
+    // in the left-to-right PDF rendering context.
+    let full_text: String = runs.iter().map(|r| r.text.as_str()).collect();
+    let runs = if crate::bidi::has_rtl_chars(&full_text) {
+        crate::bidi::reorder_runs_bidi(&runs, false)
+    } else {
+        runs
+    };
+
     // Concatenate all text then re-split by words, preserving run styles.
     // For text containing \n (white-space: pre), split on newlines first,
     // then split each segment by words.

@@ -65,11 +65,12 @@
 //!     .unwrap();
 //! ```
 
+/// Adobe Font Metrics for standard PDF fonts (Helvetica, Times, Courier).
+pub(crate) mod bidi;
 /// CLI argument parsing and conversion logic.
 pub mod cli;
 /// Error types for conversion failures.
 pub mod error;
-/// Adobe Font Metrics for standard PDF fonts (Helvetica, Times, Courier).
 pub(crate) mod fonts;
 pub(crate) mod layout;
 pub(crate) mod parser;
