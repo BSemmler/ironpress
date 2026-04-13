@@ -3677,7 +3677,24 @@ fn flatten_element(
                 heading_level: heading_level(el.tag),
                 clip_children_count: 0,
             };
+            // Compute needs_wrapper early so we know whether to push the
+            // TextBlock or save it for the Container wrapper path.
+            let early_has_visual_for_wrapper = has_background_paint(&style)
+                || style.border.has_any()
+                || style.border_radius > 0.0
+                || style.box_shadow.is_some();
+            let early_needs_wrapper = early_has_visual_for_wrapper
+                || style.aspect_ratio.is_some()
+                || style.height.is_some()
+                || (positioned_container && (before_is_abs || after_is_abs))
+                || skip_inline_collection;
+            let early_no_inline = !had_inline_runs;
+
             if has_block_kids_for_wrapper {
+                saved_inline_element = Some(inline_tb);
+            } else if early_no_inline && early_needs_wrapper {
+                // Don't push empty TextBlock — the wrapper path will
+                // create a Container with the correct block_width.
                 saved_inline_element = Some(inline_tb);
             } else {
                 output.push(inline_tb);
@@ -4870,6 +4887,54 @@ fn flatten_flex_container(
                         }
                     }
                     free_space = 0.0;
+                }
+
+                // Second pass: re-layout flex-grow items whose width changed
+                // significantly. This ensures percentage-width children inside
+                // flex items resolve against the final cell width, not the
+                // initial estimate.
+                for &i in &line_items {
+                    if items[i].flex_grow > 0.0
+                        && (items[i].width - items[i].base_width).abs() > 1.0
+                    {
+                        let final_w = items[i].width;
+                        let child_el = child_elements[i];
+                        let has_block_kids = child_el.children.iter().any(|c| {
+                            matches!(c, DomNode::Element(e) if e.tag.is_block() && !collects_as_inline_text(e.tag))
+                        });
+                        if has_block_kids {
+                            let mut relayout_buf = Vec::new();
+                            let mut relayout_ancestors = ancestors.to_vec();
+                            relayout_ancestors.push(AncestorInfo {
+                                element: el,
+                                child_index: 0,
+                                sibling_count: 0,
+                                preceding_siblings: Vec::new(),
+                            });
+                            flatten_element(
+                                child_el,
+                                style,
+                                final_w,
+                                10000.0,
+                                &mut relayout_buf,
+                                None,
+                                rules,
+                                &relayout_ancestors,
+                                positioned_depth,
+                                i,
+                                child_count,
+                                &[],
+                                fonts,
+                                None,
+                                counter_state,
+                            );
+                            if !relayout_buf.is_empty() {
+                                items[i].elements = relayout_buf;
+                                items[i].height =
+                                    items[i].elements.iter().map(estimate_element_height).sum();
+                            }
+                        }
+                    }
                 }
 
                 let free_space = free_space.max(0.0);
