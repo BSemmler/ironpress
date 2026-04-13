@@ -3002,7 +3002,31 @@ fn flatten_element(
                 || style.border.has_any()
                 || style.border_radius > 0.0
                 || style.box_shadow.is_some();
+            // Check early if this positioned container has absolute children.
+            // When true, skip the has_block_children fast path so we use the
+            // Container/wrapper path instead, preserving the containing block.
+            let early_has_abs_children = positioned_container
+                && el.children.iter().any(|c| {
+                    if let DomNode::Element(e) = c {
+                        // Quick inline style check
+                        let s = e.style_attr().unwrap_or("");
+                        if s.contains("absolute") {
+                            return true;
+                        }
+                        // Check stylesheet rules
+                        let cls = e.class_list();
+                        let cls_refs: Vec<&str> = cls.iter().map(|s| s.as_ref()).collect();
+                        let cs = compute_style_with_context(
+                            e.tag, e.style_attr(), &style, rules, e.tag_name(),
+                            &cls_refs, e.id(), &e.attributes, &SelectorContext::default(),
+                        );
+                        cs.position == Position::Absolute
+                    } else {
+                        false
+                    }
+                });
             let has_block_children = !parent_has_visual
+                && !early_has_abs_children
                 && el.children.iter().any(|c| {
                     matches!(c, DomNode::Element(e)
                         if (has_own_margins(e.tag)
@@ -3597,10 +3621,34 @@ fn flatten_element(
             || style.border.has_any()
             || style.border_radius > 0.0
             || style.box_shadow.is_some();
+        // A positioned container (position: relative/absolute) needs the
+        // Container element to establish a containing block for absolute children.
+        let has_abs_children = positioned_container
+            && el.children.iter().any(|c| {
+                if let DomNode::Element(e) = c {
+                    let cls = e.class_list();
+                    let cls_refs: Vec<&str> = cls.iter().map(|s| s.as_ref()).collect();
+                    let child_style = compute_style_with_context(
+                        e.tag,
+                        e.style_attr(),
+                        &style,
+                        rules,
+                        e.tag_name(),
+                        &cls_refs,
+                        e.id(),
+                        &e.attributes,
+                        &SelectorContext::default(),
+                    );
+                    child_style.position == Position::Absolute
+                } else {
+                    false
+                }
+            });
         let needs_wrapper = has_visual
             || style.aspect_ratio.is_some()
             || style.height.is_some()
-            || (positioned_container && (before_is_abs || after_is_abs));
+            || (positioned_container && (before_is_abs || after_is_abs))
+            || has_abs_children;
         let no_inline_content = !had_inline_runs;
 
         if (no_inline_content || has_block_kids_for_wrapper) && needs_wrapper && nesting_depth < 40
