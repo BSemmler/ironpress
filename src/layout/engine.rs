@@ -1556,6 +1556,11 @@ pub fn layout_with_rules_and_fonts(
     paginate(elements, content_height)
 }
 
+/// Flatten a list of DOM nodes into layout elements.
+///
+/// Iterates over `nodes`, collecting inline-block groups and dispatching
+/// each element to [`flatten_element`]. Text nodes between elements
+/// trigger inline-block group flushes when non-whitespace.
 #[allow(clippy::too_many_arguments)]
 fn flatten_nodes(
     nodes: &[DomNode],
@@ -3151,6 +3156,11 @@ fn layout_block_element(
     false
 }
 
+/// Flatten a single DOM element into layout elements.
+///
+/// Computes the element's style, handles special tags (math, br, hr, img,
+/// svg, form controls, media, tables, lists), then delegates to
+/// [`route_element`] for display-mode dispatching.
 #[allow(clippy::too_many_arguments)]
 fn flatten_element(
     el: &ElementNode,
