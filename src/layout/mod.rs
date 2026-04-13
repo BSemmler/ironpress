@@ -3,6 +3,7 @@ pub mod engine;
 pub(crate) mod flex;
 pub(crate) mod grid;
 pub(crate) mod images;
+pub(crate) mod inline;
 pub mod math;
 pub(crate) mod paginate;
 pub(crate) mod table;
