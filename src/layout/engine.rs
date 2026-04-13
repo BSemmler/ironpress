@@ -1133,6 +1133,7 @@ pub struct ContainingBlock {
 
 /// Page content-area dimensions (after margins).
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct Viewport {
     pub width: f32,
     pub height: f32,
@@ -1140,6 +1141,7 @@ pub struct Viewport {
 
 /// Width, height, and font-size inherited from the parent box.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct ParentBox {
     pub content_width: f32,
     pub content_height: Option<f32>,
@@ -1151,6 +1153,7 @@ pub struct ParentBox {
 /// Replaces scattered `available_width` / `available_height` /
 /// `abs_containing_block` parameters with a single struct.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct LayoutContext {
     pub viewport: Viewport,
     pub parent: ParentBox,
@@ -1158,6 +1161,7 @@ pub struct LayoutContext {
     pub root_font_size: f32,
 }
 
+#[allow(dead_code)]
 impl LayoutContext {
     /// Width available for the current element (parent content width).
     pub fn available_width(&self) -> f32 {
@@ -3163,10 +3167,8 @@ fn flatten_element(
     fonts: &HashMap<String, TtfFont>,
     counter_state: &mut CounterState,
 ) {
-    let layout_ctx = *ctx;
     let available_width = ctx.available_width();
     let available_height = ctx.available_height();
-    let abs_containing_block = ctx.containing_block;
     let classes = el.class_list();
     let selector_ctx = SelectorContext {
         ancestors: ancestors.to_vec(),
@@ -15349,6 +15351,280 @@ line 3</pre>
         assert!(
             has_container_bg,
             "Container should have background_color from rgba stylesheet"
+        );
+    }
+
+    // ---- LayoutContext tests ----
+
+    #[test]
+    fn layout_context_available_width_returns_parent_content_width() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: Some(600.0),
+                font_size: 16.0,
+            },
+            containing_block: None,
+            root_font_size: 16.0,
+        };
+        assert!((ctx.available_width() - 400.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn layout_context_available_height_falls_back_to_viewport() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: None,
+                font_size: 16.0,
+            },
+            containing_block: None,
+            root_font_size: 16.0,
+        };
+        assert!((ctx.available_height() - 842.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn layout_context_available_height_uses_parent_when_set() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: Some(300.0),
+                font_size: 16.0,
+            },
+            containing_block: None,
+            root_font_size: 16.0,
+        };
+        assert!((ctx.available_height() - 300.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn layout_context_with_parent_preserves_viewport() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: Some(600.0),
+                font_size: 16.0,
+            },
+            containing_block: Some(ContainingBlock {
+                x: 10.0,
+                width: 400.0,
+                height: 600.0,
+                depth: 1,
+            }),
+            root_font_size: 16.0,
+        };
+        let child = ctx.with_parent(200.0, Some(150.0), 12.0);
+        assert!((child.viewport.width - 595.0).abs() < f32::EPSILON);
+        assert!((child.viewport.height - 842.0).abs() < f32::EPSILON);
+        assert!((child.available_width() - 200.0).abs() < f32::EPSILON);
+        assert!((child.available_height() - 150.0).abs() < f32::EPSILON);
+        assert!((child.parent.font_size - 12.0).abs() < f32::EPSILON);
+        assert!((child.root_font_size - 16.0).abs() < f32::EPSILON);
+        // containing_block is preserved
+        assert!(child.containing_block.is_some());
+    }
+
+    #[test]
+    fn layout_context_with_containing_block_replaces_cb() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: Some(600.0),
+                font_size: 16.0,
+            },
+            containing_block: None,
+            root_font_size: 16.0,
+        };
+        let cb = ContainingBlock {
+            x: 50.0,
+            width: 300.0,
+            height: 200.0,
+            depth: 2,
+        };
+        let updated = ctx.with_containing_block(Some(cb));
+        assert!(updated.containing_block.is_some());
+        assert!((updated.containing_block.unwrap().x - 50.0).abs() < f32::EPSILON);
+        // parent is preserved
+        assert!((updated.available_width() - 400.0).abs() < f32::EPSILON);
+    }
+
+    // ---- Integration tests for extracted layout functions ----
+
+    #[test]
+    fn route_element_dispatches_flex() {
+        let html = r#"<div style="display:flex"><span>A</span><span>B</span></div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+    }
+
+    #[test]
+    fn route_element_dispatches_grid() {
+        let html = r#"<div style="display:grid;grid-template-columns:1fr 1fr"><div>A</div><div>B</div></div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+    }
+
+    #[test]
+    fn route_element_dispatches_inline() {
+        let html = r#"<span>inline text</span>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+    }
+
+    #[test]
+    fn inline_block_shrink_to_fit_width() {
+        let html = r#"<div style="display:inline-block;background:#eee">short</div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        // The inline-block should be narrower than the full page width
+        let page_width = PageSize::A4.width - Margin::default().left - Margin::default().right;
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock {
+                block_width: Some(w),
+                ..
+            } = el
+            {
+                assert!(
+                    *w < page_width,
+                    "inline-block width {w} should be less than page width {page_width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn percentage_border_radius_resolved() {
+        let html =
+            r#"<div style="width:100px;height:100px;border-radius:50%;background:red">.</div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        // 50% of min(100px=75pt, 100px=75pt) = 37.5pt
+        for (_, el) in &pages[0].elements {
+            match el {
+                LayoutElement::TextBlock { border_radius, .. }
+                | LayoutElement::Container { border_radius, .. } => {
+                    if *border_radius > 0.0 {
+                        assert!(
+                            (*border_radius - 37.5).abs() < 1.0,
+                            "border_radius {border_radius} should be ~37.5pt"
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn css_height_narrows_available_height_for_children() {
+        // Parent with explicit height, child SVG with percentage height
+        let html = r#"<div style="height:200pt"><svg width="100" height="50%"></svg></div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        fn find_svg(elements: &[(f32, LayoutElement)]) -> Option<f32> {
+            for (_, el) in elements {
+                match el {
+                    LayoutElement::Svg { height, .. } => return Some(*height),
+                    LayoutElement::Container { children, .. } => {
+                        for child in children {
+                            if let LayoutElement::Svg { height, .. } = child {
+                                return Some(*height);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        let svg_h = find_svg(&pages[0].elements).expect("expected svg element");
+        assert!(
+            (svg_h - 100.0).abs() < 1.0,
+            "SVG height {svg_h} should be ~100pt (50% of 200pt)"
+        );
+    }
+
+    #[test]
+    fn flex_grow_distributes_remaining_space() {
+        let html = r#"
+            <div style="display:flex;width:300px">
+                <div style="flex-grow:1;background:#aaa">A</div>
+                <div style="flex-grow:2;background:#ccc">B</div>
+            </div>
+        "#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+    }
+
+    #[test]
+    fn multicolumn_layout_creates_grid() {
+        let html = r#"<div style="column-count:3"><p>One</p><p>Two</p><p>Three</p></div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        // Should produce grid rows
+        let has_grid = pages[0].elements.iter().any(|(_, el)| {
+            matches!(
+                el,
+                LayoutElement::Container { .. } | LayoutElement::GridRow { .. }
+            )
+        });
+        assert!(has_grid, "multi-column should produce Container/GridRow");
+    }
+
+    #[test]
+    fn bidi_reordering_preserves_content() {
+        let html = r#"<p>Hello مرحبا World</p>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+        // Verify all text content is present (might be reordered)
+        let mut all_text = String::new();
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock { lines, .. } = el {
+                for line in lines {
+                    for run in &line.runs {
+                        all_text.push_str(&run.text);
+                    }
+                }
+            }
+        }
+        assert!(
+            all_text.contains("Hello") && all_text.contains("World"),
+            "BiDi should preserve Latin text"
         );
     }
 }
