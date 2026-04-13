@@ -1850,9 +1850,31 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                         let svg_x = nested_x;
                                         let svg_y = nested_y - svg_h;
                                         content.push_str("q\n");
+                                        // Y-flip + position
                                         content.push_str(&format!(
-                                            "{svg_w} 0 0 {svg_h} {svg_x} {svg_y} cm\n"
+                                            "1 0 0 -1 {svg_x} {} cm\n",
+                                            svg_y + svg_h
                                         ));
+                                        // Apply viewBox scaling
+                                        if let Some(placement) =
+                                            crate::render::svg_geometry::compute_svg_placement(
+                                                tree,
+                                                crate::render::svg_geometry::SvgPlacementRequest::from_rect(
+                                                    0.0, 0.0, *svg_w, *svg_h,
+                                                    tree.preserve_aspect_ratio,
+                                                ),
+                                            )
+                                        {
+                                            content.push_str("q\n");
+                                            content.push_str(&placement.viewport.clip_path());
+                                            content.push_str(&format!(
+                                                "{sx} 0 0 {sy} {tx} {ty} cm\n",
+                                                sx = placement.scale_x,
+                                                sy = placement.scale_y,
+                                                tx = placement.translate_x,
+                                                ty = placement.translate_y,
+                                            ));
+                                        }
                                         {
                                             let mut image_sink = SvgPageImageSink {
                                                 pdf_writer: &mut pdf_writer,
@@ -1869,6 +1891,9 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                                 &mut content,
                                                 &mut resources,
                                             );
+                                        }
+                                        if tree.view_box.is_some() {
+                                            content.push_str("Q\n");
                                         }
                                         content.push_str("Q\n");
                                         nested_y -= svg_h;
