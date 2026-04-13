@@ -163,12 +163,13 @@ fn element_is_inline_block(
 fn layout_inline_block_group(
     elements: &[&ElementNode],
     parent_style: &ComputedStyle,
-    available_width: f32,
+    ctx: &LayoutContext,
     output: &mut Vec<LayoutElement>,
     rules: &[CssRule],
     ancestors: &[AncestorInfo],
     fonts: &HashMap<String, TtfFont>,
 ) {
+    let available_width = ctx.available_width();
     if elements.is_empty() {
         return;
     }
@@ -1555,6 +1556,22 @@ fn flatten_nodes(
     abs_containing_block: Option<ContainingBlock>,
     counter_state: &mut CounterState,
 ) {
+    // Transitional LayoutContext — will be replaced when flatten_nodes
+    // is migrated to receive &LayoutContext directly.
+    let ib_ctx = LayoutContext {
+        viewport: Viewport {
+            width: available_width,
+            height: available_height,
+        },
+        parent: ParentBox {
+            content_width: available_width,
+            content_height: Some(available_height),
+            font_size: parent_style.font_size,
+        },
+        containing_block: abs_containing_block,
+        root_font_size: parent_style.root_font_size,
+    };
+
     // Count element children for sibling context
     let element_count = nodes
         .iter()
@@ -1573,7 +1590,7 @@ fn flatten_nodes(
     fn flush_ib(
         group: &mut Vec<&ElementNode>,
         parent_style: &ComputedStyle,
-        available_width: f32,
+        ctx: &LayoutContext,
         output: &mut Vec<LayoutElement>,
         rules: &[CssRule],
         ancestors: &[AncestorInfo],
@@ -1583,15 +1600,7 @@ fn flatten_nodes(
             return;
         }
         let taken: Vec<&ElementNode> = group.drain(..).collect();
-        layout_inline_block_group(
-            &taken,
-            parent_style,
-            available_width,
-            output,
-            rules,
-            ancestors,
-            fonts,
-        );
+        layout_inline_block_group(&taken, parent_style, ctx, output, rules, ancestors, fonts);
     }
 
     for node in nodes {
@@ -1605,7 +1614,7 @@ fn flatten_nodes(
                     flush_ib(
                         &mut ib_group,
                         parent_style,
-                        available_width,
+                        &ib_ctx,
                         output,
                         list_ctx.map(|_| rules).unwrap_or(rules),
                         ancestors,
@@ -1710,7 +1719,7 @@ fn flatten_nodes(
                     flush_ib(
                         &mut ib_group,
                         parent_style,
-                        available_width,
+                        &ib_ctx,
                         output,
                         rules,
                         ancestors,
@@ -1747,7 +1756,7 @@ fn flatten_nodes(
     flush_ib(
         &mut ib_group,
         parent_style,
-        available_width,
+        &ib_ctx,
         output,
         rules,
         ancestors,
@@ -1864,6 +1873,22 @@ fn layout_block_element(
     }
 
     let style = &*style;
+
+    // Transitional LayoutContext for inline-block group calls.
+    // Will be replaced when layout_block_element takes &LayoutContext directly.
+    let ib_ctx = LayoutContext {
+        viewport: Viewport {
+            width: available_width,
+            height: available_height,
+        },
+        parent: ParentBox {
+            content_width: inner_width,
+            content_height: Some(available_height),
+            font_size: style.font_size,
+        },
+        containing_block: abs_containing_block,
+        root_font_size: style.root_font_size,
+    };
 
     let positioned_container =
         style.position == Position::Relative || style.position == Position::Absolute;
@@ -2884,7 +2909,7 @@ fn layout_block_element(
                         layout_inline_block_group(
                             &taken,
                             style,
-                            inner_width,
+                            &ib_ctx,
                             &mut child_elements,
                             rules,
                             child_ancestors,
@@ -2932,7 +2957,7 @@ fn layout_block_element(
             layout_inline_block_group(
                 &taken,
                 style,
-                inner_width,
+                &ib_ctx,
                 &mut child_elements,
                 rules,
                 child_ancestors,
@@ -3086,7 +3111,7 @@ fn layout_block_element(
                         layout_inline_block_group(
                             &taken,
                             style,
-                            inner_width,
+                            &ib_ctx,
                             output,
                             rules,
                             child_ancestors,
@@ -3123,7 +3148,7 @@ fn layout_block_element(
             layout_inline_block_group(
                 &taken,
                 style,
-                inner_width,
+                &ib_ctx,
                 output,
                 rules,
                 child_ancestors,
