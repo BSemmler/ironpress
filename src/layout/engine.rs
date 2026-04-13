@@ -4287,20 +4287,22 @@ fn flatten_flex_container(
             preceding_siblings: Vec::new(),
         });
 
-        // Determine child width early so complex items can use it for layout.
-        // For flex-grow items with flex-basis: 0 (from `flex: 1`), use the
-        // parent's full available width so percentage children resolve correctly.
-        // The actual cell width is adjusted after flex-grow distribution.
+        // Two widths: child_w_for_flex is the CSS flex-basis for wrapping
+        // decisions, child_w_for_layout is the width used to lay out children
+        // (inflated for flex-grow items so percentage children resolve correctly).
+        let child_w_for_flex = child_style
+            .flex_basis
+            .or(child_style.width)
+            .unwrap_or(width_for_percentages / child_count as f32);
         let child_w_for_layout = if child_style.flex_grow > 0.0
             && child_style.flex_basis == Some(0.0)
             && child_style.width.is_none()
         {
+            // Use full available width for child percentage resolution,
+            // but flex wrapping uses the actual basis (child_w_for_flex).
             width_for_percentages
         } else {
-            child_style
-                .flex_basis
-                .or(child_style.width)
-                .unwrap_or(width_for_percentages / child_count as f32)
+            child_w_for_flex
         };
 
         // Check if this flex item has block-level children that need full layout
@@ -4371,8 +4373,8 @@ fn flatten_flex_container(
 
             items.push(FlexItem {
                 elements: child_elements_buf,
-                width: child_w_for_layout,
-                base_width: child_w_for_layout,
+                width: child_w_for_flex,
+                base_width: child_w_for_flex,
                 flex_grow: child_style.flex_grow,
                 flex_shrink: child_style.flex_shrink,
                 height: child_h,
