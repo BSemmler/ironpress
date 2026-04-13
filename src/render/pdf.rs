@@ -300,7 +300,9 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         content.push_str("q\n");
                         match t {
                             crate::style::computed::Transform::Rotate(deg) => {
-                                let rad = deg * std::f32::consts::PI / 180.0;
+                                // Negate angle: CSS rotate is clockwise in top-down Y,
+                                // but PDF Y points up, so negate to match visual result.
+                                let rad = -deg * std::f32::consts::PI / 180.0;
                                 let cos_v = rad.cos();
                                 let sin_v = rad.sin();
                                 // T(cx,cy) · Rot · T(-cx,-cy)
@@ -318,14 +320,26 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                 content.push_str(&format!("{sx} 0 0 {sy} {tx} {ty} cm\n",));
                             }
                             crate::style::computed::Transform::Translate(tx, ty) => {
-                                content.push_str(&format!("1 0 0 1 {tx} {ty} cm\n",));
+                                // Negate Y: CSS positive Y is down, PDF positive Y is up
+                                content.push_str(&format!("1 0 0 1 {tx} {} cm\n", -ty));
                             }
                             crate::style::computed::Transform::Matrix(a, b, c, d, e, f) => {
                                 // Pre-composed matrix — apply around element centre.
-                                // T(cx,cy) · M · T(-cx,-cy)
-                                let ne = a * (-cx) + c * (-cy) + e + cx;
-                                let nf = b * (-cx) + d * (-cy) + f + cy;
-                                content.push_str(&format!("{a} {b} {c} {d} {ne} {nf} cm\n"));
+                                // Convert CSS matrix (top-down Y) to PDF (bottom-up Y):
+                                // Conjugate with Y-flip: F·M·F where F = diag(1,-1)
+                                // [a b e]     [a  -b  e ]
+                                // [c d f]  →  [-c  d  -f]
+                                let pa = a;
+                                let pb = -b;
+                                let pc = -c;
+                                let pd = d;
+                                let pe = e;
+                                let pf = -f;
+                                let ne = pa * (-cx) + pc * (-cy) + pe + cx;
+                                let nf = pb * (-cx) + pd * (-cy) + pf + cy;
+                                content.push_str(&format!(
+                                    "{pa} {pb} {pc} {pd} {ne} {nf} cm\n"
+                                ));
                             }
                         }
                     }
@@ -1399,7 +1413,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                             content.push_str("q\n");
                             match t {
                                 crate::style::computed::Transform::Rotate(deg) => {
-                                    let rad = deg * std::f32::consts::PI / 180.0;
+                                    let rad = -deg * std::f32::consts::PI / 180.0;
                                     let cos_v = rad.cos();
                                     let sin_v = rad.sin();
                                     let tx = cx - cx * cos_v + cy * sin_v;
@@ -1418,9 +1432,18 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                     content.push_str(&format!("1 0 0 1 {dx} {} cm\n", -dy));
                                 }
                                 crate::style::computed::Transform::Matrix(a, b, c, d, e, f) => {
-                                    let ne = a * (-cx) + c * (-cy) + e + cx;
-                                    let nf = b * (-cx) + d * (-cy) + f + cy;
-                                    content.push_str(&format!("{a} {b} {c} {d} {ne} {nf} cm\n"));
+                                    // CSS→PDF Y-flip conjugation
+                                    let pa = a;
+                                    let pb = -b;
+                                    let pc = -c;
+                                    let pd = d;
+                                    let pe = e;
+                                    let pf = -f;
+                                    let ne = pa * (-cx) + pc * (-cy) + pe + cx;
+                                    let nf = pb * (-cx) + pd * (-cy) + pf + cy;
+                                    content.push_str(&format!(
+                                        "{pa} {pb} {pc} {pd} {ne} {nf} cm\n"
+                                    ));
                                 }
                             }
                         }
@@ -6496,8 +6519,8 @@ mod tests {
         let pdf = render_pdf(&pages, PageSize::A4, Margin::default()).unwrap();
         let content = String::from_utf8_lossy(&pdf);
         assert!(
-            content.contains("1 0 0 1 10 20 cm"),
-            "transform: translate(10pt, 20pt) should produce '1 0 0 1 10 20 cm'"
+            content.contains("1 0 0 1 10 -20 cm"),
+            "transform: translate(10pt, 20pt) should produce '1 0 0 1 10 -20 cm' (Y negated for PDF)"
         );
     }
 
