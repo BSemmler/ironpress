@@ -4027,7 +4027,7 @@ fn flatten_element(
 
     // Flex container handling
     if style.display == Display::Flex {
-        flatten_flex_container(
+        layout_flex_container(
             el,
             &style,
             available_width,
@@ -4049,7 +4049,7 @@ fn flatten_element(
 
     // Grid container handling
     if style.display == Display::Grid {
-        flatten_grid_container(
+        layout_grid_container(
             el,
             &style,
             available_width,
@@ -4073,7 +4073,7 @@ fn flatten_element(
             let mut col_style = style.clone();
             col_style.grid_template_columns = tracks;
             col_style.grid_gap = gap;
-            flatten_grid_container(
+            layout_grid_container(
                 el,
                 &col_style,
                 available_width,
@@ -4143,7 +4143,7 @@ fn flatten_element(
 /// encodes its position inside the flex row/column. The container itself emits
 /// a wrapper TextBlock for its background/border first, then the items.
 #[allow(clippy::too_many_arguments)]
-fn flatten_flex_container(
+fn layout_flex_container(
     el: &ElementNode,
     style: &ComputedStyle,
     available_width: f32,
@@ -5508,7 +5508,7 @@ fn resolve_grid_columns(tracks: &[GridTrack], available_width: f32, gap: f32) ->
 
 /// Lay out a CSS Grid container into GridRow layout elements.
 #[allow(clippy::too_many_arguments)]
-fn flatten_grid_container(
+fn layout_grid_container(
     el: &ElementNode,
     style: &ComputedStyle,
     available_width: f32,
