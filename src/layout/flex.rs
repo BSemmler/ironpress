@@ -895,11 +895,12 @@ pub(crate) fn layout_flex_container(
                         let mut first_pr = 0.0f32;
                         let mut first_br = 0.0f32;
                         let mut is_first = true;
-                        // Check if all elements are TextBlocks (mergeable)
-                        let all_text_blocks = item
-                            .elements
-                            .iter()
-                            .all(|e| matches!(e, LayoutElement::TextBlock { .. }));
+                        // Check if all elements are TextBlocks without borders (mergeable).
+                        // TextBlocks with borders must go through nested_elements
+                        // so the renderer can draw their individual borders.
+                        let all_text_blocks = item.elements.iter().all(|e| {
+                            matches!(e, LayoutElement::TextBlock { border, .. } if !border.has_any())
+                        });
 
                         if !all_text_blocks {
                             // Mixed elements (e.g. TextBlock + TableRow):

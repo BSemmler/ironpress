@@ -1792,6 +1792,42 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                             }
                                         }
 
+                                        // Draw borders for nested TextBlock
+                                        if n_border.has_any() {
+                                            let x1 = nested_x;
+                                            let x2 = nested_x + n_width;
+                                            let y_top = nested_y;
+                                            let y_bottom = nested_y - total_h;
+                                            if n_border.top.width > 0.0 {
+                                                let (r, g, b) = n_border.top.color;
+                                                content.push_str(&format!(
+                                                    "{r} {g} {b} RG\n{} w\n{x1} {y_top} m {x2} {y_top} l S\n",
+                                                    n_border.top.width
+                                                ));
+                                            }
+                                            if n_border.bottom.width > 0.0 {
+                                                let (r, g, b) = n_border.bottom.color;
+                                                content.push_str(&format!(
+                                                    "{r} {g} {b} RG\n{} w\n{x1} {y_bottom} m {x2} {y_bottom} l S\n",
+                                                    n_border.bottom.width
+                                                ));
+                                            }
+                                            if n_border.left.width > 0.0 {
+                                                let (r, g, b) = n_border.left.color;
+                                                content.push_str(&format!(
+                                                    "{r} {g} {b} RG\n{} w\n{x1} {y_top} m {x1} {y_bottom} l S\n",
+                                                    n_border.left.width
+                                                ));
+                                            }
+                                            if n_border.right.width > 0.0 {
+                                                let (r, g, b) = n_border.right.color;
+                                                content.push_str(&format!(
+                                                    "{r} {g} {b} RG\n{} w\n{x2} {y_top} m {x2} {y_bottom} l S\n",
+                                                    n_border.right.width
+                                                ));
+                                            }
+                                        }
+
                                         let mut ty = nested_y - n_pt;
                                         for line in n_lines {
                                             let m = line_box_metrics(line, custom_fonts);
@@ -1853,6 +1889,41 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                                     lx += rw;
                                                 }
                                                 ty -= m.descender + m.half_leading;
+                                            }
+                                            // Draw cell borders
+                                            if t_cell.border.has_any() {
+                                                let x1 = tcx;
+                                                let x2 = tcx + tw;
+                                                let y_top = nested_y;
+                                                let y_bottom = nested_y - t_row_h;
+                                                if t_cell.border.top.width > 0.0 {
+                                                    let (r, g, b) = t_cell.border.top.color;
+                                                    content.push_str(&format!(
+                                                        "{r} {g} {b} RG\n{} w\n{x1} {y_top} m {x2} {y_top} l S\n",
+                                                        t_cell.border.top.width
+                                                    ));
+                                                }
+                                                if t_cell.border.bottom.width > 0.0 {
+                                                    let (r, g, b) = t_cell.border.bottom.color;
+                                                    content.push_str(&format!(
+                                                        "{r} {g} {b} RG\n{} w\n{x1} {y_bottom} m {x2} {y_bottom} l S\n",
+                                                        t_cell.border.bottom.width
+                                                    ));
+                                                }
+                                                if t_cell.border.left.width > 0.0 {
+                                                    let (r, g, b) = t_cell.border.left.color;
+                                                    content.push_str(&format!(
+                                                        "{r} {g} {b} RG\n{} w\n{x1} {y_top} m {x1} {y_bottom} l S\n",
+                                                        t_cell.border.left.width
+                                                    ));
+                                                }
+                                                if t_cell.border.right.width > 0.0 {
+                                                    let (r, g, b) = t_cell.border.right.color;
+                                                    content.push_str(&format!(
+                                                        "{r} {g} {b} RG\n{} w\n{x2} {y_top} m {x2} {y_bottom} l S\n",
+                                                        t_cell.border.right.width
+                                                    ));
+                                                }
                                             }
                                             tcx += tw;
                                         }
@@ -2840,6 +2911,42 @@ fn render_container_children(
                     ));
                     if needs_alpha {
                         content.push_str("/GSDefault gs\n");
+                    }
+                }
+
+                // Draw child borders
+                if border.has_any() {
+                    let bx1 = render_x;
+                    let bx2 = render_x + render_w;
+                    let by1 = render_y;
+                    let by2 = render_y - child_h;
+                    if border.top.width > 0.0 {
+                        let (r, g, b) = border.top.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx2} {by1} l S\n",
+                            border.top.width
+                        ));
+                    }
+                    if border.bottom.width > 0.0 {
+                        let (r, g, b) = border.bottom.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx1} {by2} m {bx2} {by2} l S\n",
+                            border.bottom.width
+                        ));
+                    }
+                    if border.left.width > 0.0 {
+                        let (r, g, b) = border.left.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx1} {by2} l S\n",
+                            border.left.width
+                        ));
+                    }
+                    if border.right.width > 0.0 {
+                        let (r, g, b) = border.right.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx2} {by1} m {bx2} {by2} l S\n",
+                            border.right.width
+                        ));
                     }
                 }
 
