@@ -1382,14 +1382,15 @@ pub(crate) fn flatten_element(
 
     // List handling — Ul/Ol pass context to Li children
     if el.tag == HtmlTag::Ul || el.tag == HtmlTag::Ol {
-        let inner_width = available_width - style.margin.left;
+        let list_indent = style.padding.left + style.margin.left;
+        let inner_width = available_width - list_indent;
         // Accumulate indentation from parent list context
         let parent_indent = match list_ctx {
             Some(ListContext::Unordered { indent }) => *indent,
             Some(ListContext::Ordered { indent, .. }) => *indent,
             None => 0.0,
         };
-        let total_indent = parent_indent + style.margin.left;
+        let total_indent = parent_indent + list_indent;
         let mut ctx = if el.tag == HtmlTag::Ol {
             ListContext::Ordered {
                 index: 1,
