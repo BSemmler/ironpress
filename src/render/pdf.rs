@@ -740,8 +740,11 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         // spaces between words stay in a single PDF text
                         // string, preventing viewers from dropping them.
                         let merged = merge_runs(&line.runs);
-                        let mut x = text_x;
-                        for (run_idx, run) in merged.iter().enumerate() {
+
+                        // Phase 1: Draw backgrounds, decorations, and link
+                        // annotations at estimated positions (visual-only).
+                        let mut bg_x = text_x;
+                        for run in &merged {
                             if run.text.is_empty() {
                                 continue;
                             }
@@ -759,7 +762,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                     content.push_str(&format!("/{gs_name} gs\n"));
                                 }
                                 let (pad_h, pad_v) = run.padding;
-                                let rect_x = x - pad_h;
+                                let rect_x = bg_x - pad_h;
                                 let rect_y = text_y - 2.0 - pad_v;
                                 let rect_w = run_width + pad_h * 2.0;
                                 let rect_h = run.font_size + 2.0 + pad_v * 2.0;
@@ -788,29 +791,6 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                 }
                             }
 
-                            // Only advance by left padding when entering a new
-                            // background group, not between words in the same span.
-                            let pad_h = run.padding.0;
-                            let prev_bg = if run_idx > 0 {
-                                merged.get(run_idx - 1).and_then(|r| r.background_color)
-                            } else {
-                                None
-                            };
-                            let entering_bg =
-                                run.background_color.is_some() && prev_bg != run.background_color;
-                            if pad_h > 0.0 && entering_bg {
-                                x += pad_h;
-                            }
-
-                            render_run_text(
-                                &mut content,
-                                run,
-                                x,
-                                text_y,
-                                custom_fonts,
-                                &prepared_custom_fonts,
-                            );
-
                             // Draw underline (font-size-relative position and thickness)
                             if run.underline {
                                 let (_, descender_ratio) = crate::fonts::font_metrics_ratios(
@@ -823,8 +803,8 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                 let uy = text_y - desc * 0.6;
                                 let thickness = (run.font_size * 0.07).max(0.5);
                                 content.push_str(&format!(
-                                    "{r} {g} {b} RG\n{thickness} w\n{x} {uy} m {x2} {uy} l\nS\n",
-                                    x2 = x + run_width,
+                                    "{r} {g} {b} RG\n{thickness} w\n{bg_x} {uy} m {x2} {uy} l\nS\n",
+                                    x2 = bg_x + run_width,
                                 ));
                             }
 
@@ -833,27 +813,31 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                 let sy = text_y + run.font_size * 0.3;
                                 let thickness = (run.font_size * 0.07).max(0.5);
                                 content.push_str(&format!(
-                                    "{r} {g} {b} RG\n{thickness} w\n{x} {sy} m {x2} {sy} l\nS\n",
-                                    x2 = x + run_width,
+                                    "{r} {g} {b} RG\n{thickness} w\n{bg_x} {sy} m {x2} {sy} l\nS\n",
+                                    x2 = bg_x + run_width,
                                 ));
                             }
 
                             // Track link annotation
                             if let Some(annotation) =
-                                text_run_link_annotation(run, x, run_width, line_annotation_box)
+                                text_run_link_annotation(run, bg_x, run_width, line_annotation_box)
                             {
                                 annotations.push(annotation);
                             }
 
-                            // Only advance by right padding when leaving a bg group
-                            let next_bg = merged.get(run_idx + 1).and_then(|r| r.background_color);
-                            let leaving_bg =
-                                run.background_color.is_some() && next_bg != run.background_color;
-                            x += run_width;
-                            if pad_h > 0.0 && leaving_bg {
-                                x += pad_h;
-                            }
+                            bg_x += run_width;
                         }
+
+                        // Phase 2: Render all text in a single BT/ET block
+                        // so the PDF viewer advances the cursor naturally.
+                        render_line_text(
+                            &mut content,
+                            &merged,
+                            text_x,
+                            text_y,
+                            custom_fonts,
+                            &prepared_custom_fonts,
+                        );
 
                         // Reset letter spacing after line
                         if *letter_spacing > 0.0 {
@@ -3833,6 +3817,69 @@ fn render_run_text(
 
     content.push_str("ET\n");
     run_width
+}
+
+/// Render all text runs of a line in a single BT/ET block so the PDF viewer
+/// advances the text cursor naturally after each Tj, eliminating cumulative
+/// positioning errors between runs.
+///
+/// Falls back to per-run `render_run_text` when any run requires custom-font
+/// shaping (complex glyph positioning).
+fn render_line_text(
+    content: &mut String,
+    runs: &[TextRun],
+    start_x: f32,
+    y: f32,
+    custom_fonts: &HashMap<String, TtfFont>,
+    prepared_custom_fonts: &PreparedCustomFonts,
+) {
+    let non_empty: Vec<&TextRun> = runs.iter().filter(|r| !r.text.is_empty()).collect();
+    if non_empty.is_empty() {
+        return;
+    }
+
+    // Check whether every run can be rendered with standard PDF fonts
+    // (no custom-font shaping needed).  Unicode-fallback runs also need
+    // shaping, so they count as non-standard.
+    let all_standard = non_empty.iter().all(|run| {
+        crate::text::resolve_custom_font(&run.font_family, run.bold, run.italic, custom_fonts)
+            .is_none()
+            && crate::text::shape_with_unicode_fallback(run, custom_fonts).is_none()
+    });
+
+    if all_standard {
+        // Simple path: single BT block, one Td to set initial position,
+        // then consecutive Tf/rg/Tj operators.  The viewer advances the
+        // text cursor after each Tj.
+        content.push_str("BT\n");
+        let mut first = true;
+        for run in &non_empty {
+            let (r, g, b) = run.color;
+            let font_name = resolve_font_name(run, None, None);
+            content.push_str(&format!("{r} {g} {b} rg\n"));
+            content.push_str(&format!("/{font_name} {} Tf\n", run.font_size));
+            if first {
+                content.push_str(&format!(
+                    "{} {} Td\n",
+                    format_pdf_number(start_x),
+                    format_pdf_number(y),
+                ));
+                first = false;
+            }
+            let encoded = encode_pdf_text(&run.text);
+            content.push_str(&format!("({encoded}) Tj\n"));
+        }
+        content.push_str("ET\n");
+    } else {
+        // Mixed path: some runs need custom-font shaping.
+        // Fall back to per-run rendering with individual BT/ET blocks.
+        let mut x = start_x;
+        for run in &non_empty {
+            let run_width =
+                render_run_text(content, run, x, y, custom_fonts, prepared_custom_fonts);
+            x += run_width;
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

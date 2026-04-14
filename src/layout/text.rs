@@ -324,23 +324,32 @@ pub(crate) fn wrap_text_runs(
 
         let text = if needs_space {
             if bg_changed && template.background_color.is_some() {
-                // Emit space as separate unstyled run
+                // Emit space as separate unstyled run using the PREVIOUS
+                // run's font so it matches the surrounding text metrics.
+                let prev_run = current_runs.last().unwrap_or(&template);
                 let space = " ".to_string();
                 let sw = estimate_word_width(
                     &space,
-                    template.font_size,
-                    &template.font_family,
-                    template.bold,
-                    template.italic,
+                    prev_run.font_size,
+                    &prev_run.font_family,
+                    prev_run.bold,
+                    prev_run.italic,
                     fonts,
                 );
                 current_width += sw;
                 current_runs.push(TextRun {
                     text: space,
+                    font_size: prev_run.font_size,
+                    font_family: prev_run.font_family.clone(),
+                    bold: prev_run.bold,
+                    italic: prev_run.italic,
+                    color: prev_run.color,
+                    underline: false,
+                    line_through: false,
+                    link_url: None,
                     background_color: None,
                     padding: (0.0, 0.0),
                     border_radius: 0.0,
-                    ..template.clone()
                 });
                 word
             } else {

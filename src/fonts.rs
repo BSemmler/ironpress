@@ -208,6 +208,206 @@ static HELVETICA_BOLD_WIDTHS: [u16; 95] = [
     584, // 126 ~
 ];
 
+/// Times-Roman character widths (AFM units, 1000 per em) for ASCII 32–126.
+/// Index 0 corresponds to codepoint 32 (space).
+static TIMES_ROMAN_WIDTHS: [u16; 95] = [
+    250, // 32 space
+    333, // 33 !
+    408, // 34 "
+    500, // 35 #
+    500, // 36 $
+    833, // 37 %
+    778, // 38 &
+    180, // 39 '
+    333, // 40 (
+    333, // 41 )
+    500, // 42 *
+    564, // 43 +
+    250, // 44 ,
+    333, // 45 -
+    250, // 46 .
+    278, // 47 /
+    500, // 48 0
+    500, // 49 1
+    500, // 50 2
+    500, // 51 3
+    500, // 52 4
+    500, // 53 5
+    500, // 54 6
+    500, // 55 7
+    500, // 56 8
+    500, // 57 9
+    278, // 58 :
+    278, // 59 ;
+    564, // 60 <
+    564, // 61 =
+    564, // 62 >
+    444, // 63 ?
+    921, // 64 @
+    722, // 65 A
+    667, // 66 B
+    667, // 67 C
+    722, // 68 D
+    611, // 69 E
+    556, // 70 F
+    722, // 71 G
+    722, // 72 H
+    333, // 73 I
+    389, // 74 J
+    722, // 75 K
+    611, // 76 L
+    889, // 77 M
+    722, // 78 N
+    722, // 79 O
+    556, // 80 P
+    722, // 81 Q
+    667, // 82 R
+    556, // 83 S
+    611, // 84 T
+    722, // 85 U
+    722, // 86 V
+    944, // 87 W
+    722, // 88 X
+    722, // 89 Y
+    611, // 90 Z
+    333, // 91 [
+    278, // 92 backslash
+    333, // 93 ]
+    469, // 94 ^
+    500, // 95 _
+    333, // 96 `
+    444, // 97 a
+    500, // 98 b
+    444, // 99 c
+    500, // 100 d
+    444, // 101 e
+    333, // 102 f
+    500, // 103 g
+    500, // 104 h
+    278, // 105 i
+    278, // 106 j
+    500, // 107 k
+    278, // 108 l
+    778, // 109 m
+    500, // 110 n
+    500, // 111 o
+    500, // 112 p
+    500, // 113 q
+    333, // 114 r
+    389, // 115 s
+    278, // 116 t
+    500, // 117 u
+    500, // 118 v
+    722, // 119 w
+    500, // 120 x
+    500, // 121 y
+    444, // 122 z
+    480, // 123 {
+    200, // 124 |
+    480, // 125 }
+    541, // 126 ~
+];
+
+/// Times-Bold character widths (AFM units, 1000 per em) for ASCII 32–126.
+/// Index 0 corresponds to codepoint 32 (space).
+static TIMES_BOLD_WIDTHS: [u16; 95] = [
+    250,  // 32 space
+    333,  // 33 !
+    555,  // 34 "
+    500,  // 35 #
+    500,  // 36 $
+    1000, // 37 %
+    833,  // 38 &
+    278,  // 39 '
+    333,  // 40 (
+    333,  // 41 )
+    500,  // 42 *
+    570,  // 43 +
+    250,  // 44 ,
+    333,  // 45 -
+    250,  // 46 .
+    278,  // 47 /
+    500,  // 48 0
+    500,  // 49 1
+    500,  // 50 2
+    500,  // 51 3
+    500,  // 52 4
+    500,  // 53 5
+    500,  // 54 6
+    500,  // 55 7
+    500,  // 56 8
+    500,  // 57 9
+    333,  // 58 :
+    333,  // 59 ;
+    570,  // 60 <
+    570,  // 61 =
+    570,  // 62 >
+    500,  // 63 ?
+    930,  // 64 @
+    722,  // 65 A
+    667,  // 66 B
+    722,  // 67 C
+    722,  // 68 D
+    667,  // 69 E
+    611,  // 70 F
+    778,  // 71 G
+    778,  // 72 H
+    389,  // 73 I
+    500,  // 74 J
+    778,  // 75 K
+    667,  // 76 L
+    944,  // 77 M
+    722,  // 78 N
+    778,  // 79 O
+    611,  // 80 P
+    778,  // 81 Q
+    722,  // 82 R
+    556,  // 83 S
+    667,  // 84 T
+    722,  // 85 U
+    722,  // 86 V
+    1000, // 87 W
+    722,  // 88 X
+    722,  // 89 Y
+    667,  // 90 Z
+    333,  // 91 [
+    278,  // 92 backslash
+    333,  // 93 ]
+    581,  // 94 ^
+    500,  // 95 _
+    333,  // 96 `
+    500,  // 97 a
+    556,  // 98 b
+    444,  // 99 c
+    556,  // 100 d
+    444,  // 101 e
+    333,  // 102 f
+    500,  // 103 g
+    556,  // 104 h
+    278,  // 105 i
+    333,  // 106 j
+    556,  // 107 k
+    278,  // 108 l
+    833,  // 109 m
+    556,  // 110 n
+    500,  // 111 o
+    556,  // 112 p
+    556,  // 113 q
+    444,  // 114 r
+    389,  // 115 s
+    333,  // 116 t
+    556,  // 117 u
+    500,  // 118 v
+    722,  // 119 w
+    500,  // 120 x
+    500,  // 121 y
+    444,  // 122 z
+    394,  // 123 {
+    220,  // 124 |
+    394,  // 125 }
+    520,  // 126 ~
+];
+
 /// Default width for characters outside ASCII 32–126 (AFM units).
 const DEFAULT_WIDTH: u16 = 556;
 
@@ -281,11 +481,7 @@ pub(crate) fn char_width(ch: char, font_size: f32, font_family: &FontFamily, bol
     let afm = match font_family {
         FontFamily::Courier => COURIER_WIDTH,
         FontFamily::Helvetica | FontFamily::Custom(_) => helvetica_char_afm(ch, bold),
-        FontFamily::TimesRoman => {
-            // Times-Roman has similar proportions to Helvetica; reuse
-            // Helvetica metrics as a reasonable approximation.
-            helvetica_char_afm(ch, bold)
-        }
+        FontFamily::TimesRoman => times_roman_char_afm(ch, bold),
     };
     afm as f32 / 1000.0 * font_size
 }
@@ -378,6 +574,46 @@ fn helvetica_char_afm(ch: char, bold: bool) -> u16 {
             0x2014 => 1000,         // em-dash
             0x2018 | 0x2019 => 222, // single quotes
             0x201C | 0x201D => 333, // double quotes
+            0x2026 => 1000,         // ellipsis
+            _ => DEFAULT_WIDTH,
+        }
+    } else if (0x2500..=0x257F).contains(&code) {
+        // Box drawing characters — monospaced
+        600
+    } else {
+        DEFAULT_WIDTH
+    }
+}
+
+/// Look up the Times-Roman (or Times-Bold) AFM width for a character.
+fn times_roman_char_afm(ch: char, bold: bool) -> u16 {
+    let code = ch as u32;
+    if (32..=126).contains(&code) {
+        let idx = (code - 32) as usize;
+        if bold {
+            TIMES_BOLD_WIDTHS[idx]
+        } else {
+            TIMES_ROMAN_WIDTHS[idx]
+        }
+    } else if is_cjk_char(code) || is_fullwidth_char(code) {
+        // CJK ideographs and fullwidth characters are approximately 1em wide
+        1000
+    } else if is_emoji_char(code) {
+        // Emoji are typically rendered at full-width
+        1000
+    } else if (0x0590..=0x08FF).contains(&code) {
+        // Hebrew, Arabic, and related scripts — proportional widths
+        if bold { 600 } else { 500 }
+    } else if (0x0370..=0x03FF).contains(&code) {
+        // Greek characters — similar to Latin proportions
+        if bold { 600 } else { 500 }
+    } else if (0x2000..=0x206F).contains(&code) {
+        // General punctuation (em dash, en dash, etc.)
+        match code {
+            0x2013 => 500,          // en-dash
+            0x2014 => 1000,         // em-dash
+            0x2018 | 0x2019 => 180, // single quotes (Times uses 180 for apostrophe)
+            0x201C | 0x201D => 444, // double quotes
             0x2026 => 1000,         // ellipsis
             _ => DEFAULT_WIDTH,
         }
