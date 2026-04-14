@@ -568,17 +568,20 @@ pub fn layout_with_rules_and_fonts(
         containing_block: None,
         root_font_size: parent_style.root_font_size,
     };
+    let mut env = LayoutEnv {
+        rules,
+        fonts: custom_fonts,
+        counter_state: &mut counter_state,
+    };
     flatten_nodes(
         nodes,
         &parent_style,
         &root_ctx,
         &mut elements,
         None,
-        rules,
         &ancestors,
         0,
-        custom_fonts,
-        &mut counter_state,
+        &mut env,
     );
 
     // Then paginate
@@ -597,11 +600,9 @@ fn flatten_nodes(
     ctx: &LayoutContext,
     output: &mut Vec<LayoutElement>,
     list_ctx: Option<&ListContext>,
-    rules: &[CssRule],
     ancestors: &[AncestorInfo],
     positioned_ancestor_depth: usize,
-    fonts: &HashMap<String, TtfFont>,
-    counter_state: &mut CounterState,
+    env: &mut LayoutEnv,
 ) {
     let ib_ctx = *ctx;
 
@@ -649,9 +650,9 @@ fn flatten_nodes(
                         parent_style,
                         &ib_ctx,
                         output,
-                        list_ctx.map(|_| rules).unwrap_or(rules),
+                        list_ctx.map(|_| env.rules).unwrap_or(env.rules),
                         ancestors,
-                        fonts,
+                        env.fonts,
                     );
                 }
                 if !trimmed.is_empty() {
@@ -666,23 +667,23 @@ fn flatten_nodes(
                             line_through: parent_style.text_decoration_line_through,
                             color: parent_style.color.to_f32_rgb(),
                             link_url: None,
-                            font_family: resolve_style_font_family(parent_style, fonts),
+                            font_family: resolve_style_font_family(parent_style, env.fonts),
                             background_color: None,
                             padding: (0.0, 0.0),
                             border_radius: 0.0,
                         },
                         &mut text_runs,
-                        fonts,
+                        env.fonts,
                     );
                     let lines = wrap_text_runs(
                         text_runs,
                         TextWrapOptions::new(
                             ctx.available_width(),
                             parent_style.font_size,
-                            resolved_line_height_factor(parent_style, fonts),
+                            resolved_line_height_factor(parent_style, env.fonts),
                             parent_style.overflow_wrap,
                         ),
-                        fonts,
+                        env.fonts,
                     );
                     if !lines.is_empty() {
                         output.push(LayoutElement::TextBlock {
@@ -740,7 +741,7 @@ fn flatten_nodes(
                 if element_is_inline_block(
                     el,
                     parent_style,
-                    rules,
+                    env.rules,
                     ancestors,
                     element_index,
                     element_count,
@@ -754,9 +755,9 @@ fn flatten_nodes(
                         parent_style,
                         &ib_ctx,
                         output,
-                        rules,
+                        env.rules,
                         ancestors,
-                        fonts,
+                        env.fonts,
                     );
                     flatten_element(
                         el,
@@ -764,14 +765,12 @@ fn flatten_nodes(
                         &ib_ctx,
                         output,
                         list_ctx,
-                        rules,
                         ancestors,
                         positioned_ancestor_depth,
                         element_index,
                         element_count,
                         &preceding_siblings,
-                        fonts,
-                        counter_state,
+                        env,
                     );
                 }
                 // Track this element as a preceding sibling for the next element
@@ -789,9 +788,9 @@ fn flatten_nodes(
         parent_style,
         &ib_ctx,
         output,
-        rules,
+        env.rules,
         ancestors,
-        fonts,
+        env.fonts,
     );
 }
 
@@ -806,14 +805,12 @@ fn layout_block_element(
     style: &mut ComputedStyle,
     ctx: &LayoutContext,
     output: &mut Vec<LayoutElement>,
-    rules: &[CssRule],
     ancestors: &[AncestorInfo],
     child_ancestors: &[AncestorInfo],
     positioned_depth: usize,
-    fonts: &HashMap<String, TtfFont>,
-    counter_state: &mut CounterState,
     before_style: Option<ComputedStyle>,
     after_style: Option<ComputedStyle>,
+    env: &mut LayoutEnv,
 ) -> bool {
     let available_width = ctx.available_width();
     let available_height = ctx.available_height();
@@ -930,10 +927,10 @@ fn layout_block_element(
                 ps,
                 el,
                 inner_width,
-                fonts,
+                env.fonts,
                 None,
                 positioned_depth,
-                counter_state,
+                env.counter_state,
             ));
         }
     }
@@ -948,7 +945,13 @@ fn layout_block_element(
     // TextBlock, emit a MathBlock, then continue collecting.
     let mut runs = Vec::new();
     if !skip_inline_collection {
-        append_pseudo_inline_run(&mut runs, before_style.as_ref(), el, fonts, counter_state);
+        append_pseudo_inline_run(
+            &mut runs,
+            before_style.as_ref(),
+            el,
+            env.fonts,
+            env.counter_state,
+        );
     }
 
     // Helper closure: flush accumulated runs as a TextBlock
@@ -1121,7 +1124,7 @@ fn layout_block_element(
                         auto_offset_left,
                         el,
                         output,
-                        fonts,
+                        env.fonts,
                     );
                     // Emit math block
                     let tex = child_el.attributes.get("data-math").unwrap();
@@ -1144,8 +1147,8 @@ fn layout_block_element(
                         style,
                         &mut runs,
                         None,
-                        rules,
-                        fonts,
+                        env.rules,
+                        env.fonts,
                         ancestors,
                     );
                 }
@@ -1162,7 +1165,7 @@ fn layout_block_element(
             auto_offset_left,
             el,
             output,
-            fonts,
+            env.fonts,
         );
     } else {
         // Check if children contain block-level elements that have their own
@@ -1215,7 +1218,7 @@ fn layout_block_element(
                         e.tag,
                         e.style_attr(),
                         style,
-                        rules,
+                        env.rules,
                         e.tag_name(),
                         &cls_refs,
                         e.id(),
@@ -1236,7 +1239,7 @@ fn layout_block_element(
                     if (has_own_margins(e.tag)
                         || (e.tag.is_block() && !collects_as_inline_text(e.tag)))
                         && !element_is_inline_block(
-                            e, style, rules, child_ancestors, 0, 0, &[]))
+                            e, style, env.rules, child_ancestors, 0, 0, &[]))
             });
 
         if skip_inline_collection {
@@ -1396,8 +1399,8 @@ fn layout_block_element(
                             style,
                             &mut runs,
                             None,
-                            rules,
-                            fonts,
+                            env.rules,
+                            env.fonts,
                             ancestors,
                         );
                     }
@@ -1416,7 +1419,7 @@ fn layout_block_element(
                             auto_offset_left,
                             el,
                             target,
-                            fonts,
+                            env.fonts,
                         );
                         // Recurse into block child
                         let n_children = el
@@ -1431,14 +1434,12 @@ fn layout_block_element(
                                 .with_containing_block(None),
                             target,
                             None,
-                            rules,
                             child_ancestors,
                             positioned_depth,
                             0,
                             n_children,
                             &[],
-                            fonts,
-                            counter_state,
+                            env,
                         );
                     }
                     DomNode::Element(_) => {
@@ -1448,8 +1449,8 @@ fn layout_block_element(
                             style,
                             &mut runs,
                             None,
-                            rules,
-                            fonts,
+                            env.rules,
+                            env.fonts,
                             ancestors,
                         );
                     }
@@ -1466,7 +1467,7 @@ fn layout_block_element(
                 auto_offset_left,
                 el,
                 target,
-                fonts,
+                env.fonts,
             );
             // For visual containers, propagate parent padding to children
             // so they render inside the padded area.
@@ -1576,10 +1577,10 @@ fn layout_block_element(
                         before_style.as_ref(),
                         el,
                         inner_width,
-                        fonts,
+                        env.fonts,
                         pseudo_cb,
                         positioned_depth,
-                        counter_state,
+                        env.counter_state,
                     );
                 }
                 if after_is_abs {
@@ -1588,10 +1589,10 @@ fn layout_block_element(
                         after_style.as_ref(),
                         el,
                         inner_width,
-                        fonts,
+                        env.fonts,
                         pseudo_cb,
                         positioned_depth,
-                        counter_state,
+                        env.counter_state,
                     );
                 }
             }
@@ -1611,8 +1612,8 @@ fn layout_block_element(
                             style,
                             &mut runs,
                             None,
-                            rules,
-                            fonts,
+                            env.rules,
+                            env.fonts,
                             ancestors,
                         );
                     }
@@ -1622,8 +1623,8 @@ fn layout_block_element(
                             style,
                             &mut runs,
                             None,
-                            rules,
-                            fonts,
+                            env.rules,
+                            env.fonts,
                             ancestors,
                         );
                     }
@@ -1636,14 +1637,20 @@ fn layout_block_element(
                 style,
                 &mut runs,
                 None,
-                rules,
-                fonts,
+                env.rules,
+                env.fonts,
                 ancestors,
             );
         }
     }
     if !skip_inline_collection {
-        append_pseudo_inline_run(&mut runs, after_style.as_ref(), el, fonts, counter_state);
+        append_pseudo_inline_run(
+            &mut runs,
+            after_style.as_ref(),
+            el,
+            env.fonts,
+            env.counter_state,
+        );
     }
 
     let had_inline_runs = runs.iter().any(|r| !r.text.trim().is_empty()) || has_math_children;
@@ -1664,10 +1671,10 @@ fn layout_block_element(
             TextWrapOptions::new(
                 wrap_width,
                 style.font_size,
-                resolved_line_height_factor(style, fonts),
+                resolved_line_height_factor(style, env.fonts),
                 style.overflow_wrap,
             ),
-            fonts,
+            env.fonts,
         );
 
         // Apply text-overflow: ellipsis when overflow is hidden, white-space
@@ -1677,7 +1684,7 @@ fn layout_block_element(
             && style.white_space == WhiteSpace::NoWrap
             && style.width.is_some()
         {
-            apply_text_overflow_ellipsis(&mut lines, inner_width, fonts);
+            apply_text_overflow_ellipsis(&mut lines, inner_width, env.fonts);
         }
 
         let bg = style
@@ -1823,10 +1830,10 @@ fn layout_block_element(
             before_style.as_ref(),
             el,
             inner_width,
-            fonts,
+            env.fonts,
             cb_info,
             positioned_depth,
-            counter_state,
+            env.counter_state,
         );
     }
 
@@ -1858,7 +1865,7 @@ fn layout_block_element(
                     e.tag,
                     e.style_attr(),
                     style,
-                    rules,
+                    env.rules,
                     e.tag_name(),
                     &cls_refs,
                     e.id(),
@@ -1896,7 +1903,7 @@ fn layout_block_element(
                     && element_is_inline_block(
                         child_el,
                         style,
-                        rules,
+                        env.rules,
                         child_ancestors,
                         child_el_idx,
                         child_el_count,
@@ -1914,9 +1921,9 @@ fn layout_block_element(
                             style,
                             &ib_ctx,
                             &mut child_elements,
-                            rules,
+                            env.rules,
                             child_ancestors,
-                            fonts,
+                            env.fonts,
                         );
                     }
                     if recurses_as_layout_child(child_el.tag) {
@@ -1937,14 +1944,12 @@ fn layout_block_element(
                                 .with_containing_block(child_cb),
                             &mut child_elements,
                             None,
-                            rules,
                             child_ancestors,
                             positioned_depth,
                             child_el_idx,
                             child_el_count,
                             &[],
-                            fonts,
-                            counter_state,
+                            env,
                         );
                     }
                 }
@@ -1960,9 +1965,9 @@ fn layout_block_element(
                 style,
                 &ib_ctx,
                 &mut child_elements,
-                rules,
+                env.rules,
                 child_ancestors,
-                fonts,
+                env.fonts,
             );
         }
         // Measure children total height
@@ -1989,10 +1994,10 @@ fn layout_block_element(
                     ps,
                     el,
                     inner_width,
-                    fonts,
+                    env.fonts,
                     cb_info,
                     positioned_depth,
-                    counter_state,
+                    env.counter_state,
                 ));
             }
         }
@@ -2003,10 +2008,10 @@ fn layout_block_element(
                     ps,
                     el,
                     inner_width,
-                    fonts,
+                    env.fonts,
                     cb_info,
                     positioned_depth,
-                    counter_state,
+                    env.counter_state,
                 ));
             }
         }
@@ -2076,10 +2081,10 @@ fn layout_block_element(
                 before_style.as_ref(),
                 el,
                 inner_width,
-                fonts,
+                env.fonts,
                 cb_info,
                 positioned_depth,
-                counter_state,
+                env.counter_state,
             );
         }
         // Compute cb_info for positioned containers in the non-wrapper path
@@ -2096,7 +2101,7 @@ fn layout_block_element(
                     && element_is_inline_block(
                         child_el,
                         style,
-                        rules,
+                        env.rules,
                         child_ancestors,
                         child_el_idx,
                         child_el_count,
@@ -2114,9 +2119,9 @@ fn layout_block_element(
                             style,
                             &ib_ctx,
                             output,
-                            rules,
+                            env.rules,
                             child_ancestors,
-                            fonts,
+                            env.fonts,
                         );
                     }
                     if recurses_as_layout_child(child_el.tag) {
@@ -2127,14 +2132,12 @@ fn layout_block_element(
                                 .with_containing_block(cb_info),
                             output,
                             None,
-                            rules,
                             child_ancestors,
                             positioned_depth,
                             child_el_idx,
                             child_el_count,
                             &[],
-                            fonts,
-                            counter_state,
+                            env,
                         );
                     }
                 }
@@ -2150,9 +2153,9 @@ fn layout_block_element(
                 style,
                 &ib_ctx,
                 output,
-                rules,
+                env.rules,
                 child_ancestors,
-                fonts,
+                env.fonts,
             );
         }
     }
@@ -2163,10 +2166,10 @@ fn layout_block_element(
         after_style.as_ref(),
         el,
         inner_width,
-        fonts,
+        env.fonts,
         cb_info,
         positioned_depth,
-        counter_state,
+        env.counter_state,
     );
     false
 }
@@ -2183,14 +2186,12 @@ pub(crate) fn flatten_element(
     ctx: &LayoutContext,
     output: &mut Vec<LayoutElement>,
     list_ctx: Option<&ListContext>,
-    rules: &[CssRule],
     ancestors: &[AncestorInfo],
     positioned_ancestor_depth: usize,
     child_index: usize,
     sibling_count: usize,
     preceding_siblings: &[(String, Vec<String>)],
-    fonts: &HashMap<String, TtfFont>,
-    counter_state: &mut CounterState,
+    env: &mut LayoutEnv,
 ) {
     let available_width = ctx.available_width();
     let available_height = ctx.available_height();
@@ -2205,7 +2206,7 @@ pub(crate) fn flatten_element(
         el.tag,
         el.style_attr(),
         parent_style,
-        rules,
+        env.rules,
         el.tag_name(),
         &classes,
         el.id(),
@@ -2214,8 +2215,8 @@ pub(crate) fn flatten_element(
     );
 
     // Apply CSS counter operations for this element.
-    counter_state.apply_resets(&style.counter_reset);
-    counter_state.apply_increments(&style.counter_increment);
+    env.counter_state.apply_resets(&style.counter_reset);
+    env.counter_state.apply_increments(&style.counter_increment);
 
     // Bail out on excessively deep nesting to prevent stack overflow.
     if ancestors.len() > 30 {
@@ -2281,12 +2282,12 @@ pub(crate) fn flatten_element(
                 line_through: false,
                 color: (0.0, 0.0, 0.0),
                 link_url: None,
-                font_family: resolve_style_font_family(&style, fonts),
+                font_family: resolve_style_font_family(&style, env.fonts),
                 background_color: None,
                 padding: (0.0, 0.0),
                 border_radius: 0.0,
             }],
-            height: style.font_size * resolved_line_height_factor(&style, fonts),
+            height: style.font_size * resolved_line_height_factor(&style, env.fonts),
         };
         output.push(LayoutElement::TextBlock {
             lines: vec![line],
@@ -2350,7 +2351,11 @@ pub(crate) fn flatten_element(
         if let Some(img_element) =
             load_image_from_element(el, available_width, available_height, &style)
         {
-            output.push(add_inline_replaced_baseline_gap(img_element, &style, fonts));
+            output.push(add_inline_replaced_baseline_gap(
+                img_element,
+                &style,
+                env.fonts,
+            ));
         }
         return;
     }
@@ -2441,13 +2446,13 @@ pub(crate) fn flatten_element(
                     line_through: false,
                     color: style.color.to_f32_rgb(),
                     link_url: None,
-                    font_family: resolve_style_font_family(&style, fonts),
+                    font_family: resolve_style_font_family(&style, env.fonts),
                     background_color: None,
                     padding: (0.0, 0.0),
                     border_radius: 0.0,
                 },
                 &mut runs,
-                fonts,
+                env.fonts,
             );
             let inner_w = ctrl_width - style.padding.left - style.padding.right;
             lines = wrap_text_runs(
@@ -2455,10 +2460,10 @@ pub(crate) fn flatten_element(
                 TextWrapOptions::new(
                     inner_w,
                     style.font_size,
-                    resolved_line_height_factor(&style, fonts),
+                    resolved_line_height_factor(&style, env.fonts),
                     style.overflow_wrap,
                 ),
-                fonts,
+                env.fonts,
             );
         }
 
@@ -2595,23 +2600,23 @@ pub(crate) fn flatten_element(
                 line_through: false,
                 color: text_color,
                 link_url: None,
-                font_family: resolve_style_font_family(&style, fonts),
+                font_family: resolve_style_font_family(&style, env.fonts),
                 background_color: None,
                 padding: (0.0, 0.0),
                 border_radius: 0.0,
             },
             &mut runs,
-            fonts,
+            env.fonts,
         );
         let lines = wrap_text_runs(
             runs,
             TextWrapOptions::new(
                 media_width,
                 style.font_size,
-                resolved_line_height_factor(&style, fonts),
+                resolved_line_height_factor(&style, env.fonts),
                 style.overflow_wrap,
             ),
-            fonts,
+            env.fonts,
         );
 
         output.push(LayoutElement::TextBlock {
@@ -2737,12 +2742,10 @@ pub(crate) fn flatten_element(
             &style,
             available_width,
             output,
-            rules,
-            fonts,
             ancestors,
             child_index,
             sibling_count,
-            counter_state,
+            env,
         );
         return;
     }
@@ -2794,14 +2797,12 @@ pub(crate) fn flatten_element(
                         &child_ctx,
                         output,
                         Some(&ctx),
-                        rules,
                         &child_ancestors,
                         positioned_depth,
                         child_el_idx,
                         child_el_count,
                         &[],
-                        fonts,
-                        counter_state,
+                        env,
                     );
                     if let ListContext::Ordered { index, .. } = &mut ctx {
                         *index += 1;
@@ -2816,14 +2817,12 @@ pub(crate) fn flatten_element(
                         &child_ctx,
                         output,
                         None,
-                        rules,
                         &child_ancestors,
                         positioned_depth,
                         child_el_idx,
                         child_el_count,
                         &[],
-                        fonts,
-                        counter_state,
+                        env,
                     );
                 }
                 child_el_idx += 1;
@@ -2851,7 +2850,7 @@ pub(crate) fn flatten_element(
         };
         let li_before = compute_pseudo_element_style(
             &style,
-            rules,
+            env.rules,
             el.tag_name(),
             &classes,
             el.id(),
@@ -2862,7 +2861,7 @@ pub(crate) fn flatten_element(
         let has_custom_before = li_before.as_ref().is_some_and(|s| !s.content.is_empty());
         if has_custom_before {
             let ps = li_before.as_ref().unwrap();
-            let content_text = resolve_content(&ps.content, &el.attributes, counter_state);
+            let content_text = resolve_content(&ps.content, &el.attributes, env.counter_state);
             if !content_text.is_empty() {
                 push_text_run_with_fallback(
                     TextRun {
@@ -2874,13 +2873,13 @@ pub(crate) fn flatten_element(
                         line_through: ps.text_decoration_line_through,
                         color: ps.color.to_f32_rgb(),
                         link_url: None,
-                        font_family: resolve_style_font_family(ps, fonts),
+                        font_family: resolve_style_font_family(ps, env.fonts),
                         background_color: None,
                         padding: (0.0, 0.0),
                         border_radius: 0.0,
                     },
                     &mut runs,
-                    fonts,
+                    env.fonts,
                 );
             }
         }
@@ -2923,13 +2922,13 @@ pub(crate) fn flatten_element(
                     line_through: false,
                     color: style.color.to_f32_rgb(),
                     link_url: None,
-                    font_family: resolve_style_font_family(&style, fonts),
+                    font_family: resolve_style_font_family(&style, env.fonts),
                     background_color: None,
                     padding: (0.0, 0.0),
                     border_radius: 0.0,
                 },
                 &mut runs,
-                fonts,
+                env.fonts,
             );
         }
 
@@ -2938,8 +2937,8 @@ pub(crate) fn flatten_element(
             &style,
             &mut runs,
             None,
-            rules,
-            fonts,
+            env.rules,
+            env.fonts,
             ancestors,
         );
 
@@ -2951,10 +2950,10 @@ pub(crate) fn flatten_element(
                 TextWrapOptions::new(
                     inner_width,
                     style.font_size,
-                    resolved_line_height_factor(&style, fonts),
+                    resolved_line_height_factor(&style, env.fonts),
                     style.overflow_wrap,
                 ),
-                fonts,
+                env.fonts,
             );
             let BackgroundFields {
                 gradient: background_gradient,
@@ -3034,14 +3033,12 @@ pub(crate) fn flatten_element(
                         &child_ctx,
                         output,
                         list_ctx,
-                        rules,
                         &child_ancestors,
                         positioned_depth,
                         child_el_idx,
                         child_el_count,
                         &[],
-                        fonts,
-                        counter_state,
+                        env,
                     );
                 } else if recurses_as_layout_child(child_el.tag) {
                     let child_ctx = layout_ctx
@@ -3053,14 +3050,12 @@ pub(crate) fn flatten_element(
                         &child_ctx,
                         output,
                         None,
-                        rules,
                         &child_ancestors,
                         positioned_depth,
                         child_el_idx,
                         child_el_count,
                         &[],
-                        fonts,
-                        counter_state,
+                        env,
                     );
                 }
                 child_el_idx += 1;
@@ -3074,7 +3069,7 @@ pub(crate) fn flatten_element(
     let cls: Vec<&str> = classes.iter().map(|s| s.as_ref()).collect();
     let before_style = compute_pseudo_element_style(
         &style,
-        rules,
+        env.rules,
         el.tag_name(),
         &cls,
         el.id(),
@@ -3084,7 +3079,7 @@ pub(crate) fn flatten_element(
     );
     let after_style = compute_pseudo_element_style(
         &style,
-        rules,
+        env.rules,
         el.tag_name(),
         &cls,
         el.id(),
@@ -3098,14 +3093,12 @@ pub(crate) fn flatten_element(
         &mut style,
         &layout_ctx,
         output,
-        rules,
         ancestors,
         &child_ancestors,
         positioned_depth,
-        fonts,
-        counter_state,
         before_style,
         after_style,
+        env,
     );
 }
 
@@ -3119,14 +3112,12 @@ fn route_element(
     style: &mut ComputedStyle,
     ctx: &LayoutContext,
     output: &mut Vec<LayoutElement>,
-    rules: &[CssRule],
     ancestors: &[AncestorInfo],
     child_ancestors: &[AncestorInfo],
     positioned_depth: usize,
-    fonts: &HashMap<String, TtfFont>,
-    counter_state: &mut CounterState,
     before_style: Option<ComputedStyle>,
     after_style: Option<ComputedStyle>,
+    env: &mut LayoutEnv,
 ) {
     let layout_ctx = *ctx;
 
@@ -3137,13 +3128,11 @@ fn route_element(
             style,
             &layout_ctx,
             output,
-            rules,
             child_ancestors,
-            fonts,
             before_style.as_ref(),
             after_style.as_ref(),
             positioned_depth,
-            counter_state,
+            env,
         );
 
         if style.page_break_after {
@@ -3154,15 +3143,7 @@ fn route_element(
 
     // Grid container handling
     if style.display == Display::Grid {
-        layout_grid_container(
-            el,
-            style,
-            &layout_ctx,
-            output,
-            rules,
-            child_ancestors,
-            fonts,
-        );
+        layout_grid_container(el, style, &layout_ctx, output, child_ancestors, env);
 
         if style.page_break_after {
             output.push(LayoutElement::PageBreak);
@@ -3178,15 +3159,7 @@ fn route_element(
             let mut col_style = style.clone();
             col_style.grid_template_columns = tracks;
             col_style.grid_gap = gap;
-            layout_grid_container(
-                el,
-                &col_style,
-                &layout_ctx,
-                output,
-                rules,
-                child_ancestors,
-                fonts,
-            );
+            layout_grid_container(el, &col_style, &layout_ctx, output, child_ancestors, env);
 
             if style.page_break_after {
                 output.push(LayoutElement::PageBreak);
@@ -3201,14 +3174,12 @@ fn route_element(
             style,
             &layout_ctx,
             output,
-            rules,
             ancestors,
             child_ancestors,
             positioned_depth,
-            fonts,
-            counter_state,
             before_style,
             after_style,
+            env,
         );
         if early_exit {
             return;
@@ -3221,11 +3192,9 @@ fn route_element(
             &layout_ctx,
             output,
             None,
-            rules,
             child_ancestors,
             positioned_depth,
-            fonts,
-            counter_state,
+            env,
         );
     }
 
@@ -3234,7 +3203,7 @@ fn route_element(
     }
 
     // Pop any counters that were pushed by counter-reset on this element.
-    counter_state.pop_resets(&style.counter_reset);
+    env.counter_state.pop_resets(&style.counter_reset);
 }
 
 // Grid layout functions have been moved to `super::grid`.

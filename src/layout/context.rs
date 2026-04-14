@@ -1,3 +1,19 @@
+use crate::parser::css::CssRule;
+use crate::parser::ttf::TtfFont;
+use std::collections::HashMap;
+
+use super::engine::CounterState;
+
+/// Shared mutable environment for the layout traversal.
+///
+/// Bundles the CSS rules, font map, and counter state that flow through
+/// every layout function unchanged in shape.
+pub(crate) struct LayoutEnv<'a> {
+    pub rules: &'a [CssRule],
+    pub fonts: &'a HashMap<String, TtfFont>,
+    pub counter_state: &'a mut CounterState,
+}
+
 /// Containing block information for `position: absolute` elements.
 /// Stores the containing block's position and dimensions so the renderer
 /// can resolve offsets relative to the nearest positioned ancestor.

@@ -1,20 +1,16 @@
-use std::collections::HashMap;
-
-use crate::parser::css::{AncestorInfo, CssRule, SelectorContext};
+use crate::parser::css::{AncestorInfo, SelectorContext};
 use crate::parser::dom::{DomNode, ElementNode};
-use crate::parser::ttf::TtfFont;
 use crate::style::computed::{
     AlignItems, BackgroundOrigin, BackgroundPosition, BackgroundRepeat, BackgroundSize, BoxSizing,
     Clear, ComputedStyle, Display, FlexDirection, FlexWrap, Float, JustifyContent, Overflow,
     Position, TextAlign, VerticalAlign, Visibility, compute_style_with_context,
 };
 
-use super::context::{ContainingBlock, LayoutContext};
+use super::context::{ContainingBlock, LayoutContext, LayoutEnv};
 use super::engine::{
-    BackgroundFields, CounterState, FlexCell, LayoutBorder, LayoutElement, TextLine,
-    aspect_ratio_height, background_svg_for_style, collects_as_inline_text, flatten_element,
-    has_background_paint, measure_runs_width, pseudo_is_block_like, push_block_pseudo,
-    resolve_padding_box_height,
+    BackgroundFields, FlexCell, LayoutBorder, LayoutElement, TextLine, aspect_ratio_height,
+    background_svg_for_style, collects_as_inline_text, flatten_element, has_background_paint,
+    measure_runs_width, pseudo_is_block_like, push_block_pseudo, resolve_padding_box_height,
 };
 use super::paginate::estimate_element_height;
 use super::text::{
@@ -31,13 +27,11 @@ pub(crate) fn layout_flex_container(
     style: &ComputedStyle,
     ctx: &LayoutContext,
     output: &mut Vec<LayoutElement>,
-    rules: &[CssRule],
     ancestors: &[AncestorInfo],
-    fonts: &HashMap<String, TtfFont>,
     before_style: Option<&ComputedStyle>,
     after_style: Option<&ComputedStyle>,
     positioned_depth: usize,
-    counter_state: &mut CounterState,
+    env: &mut LayoutEnv,
 ) {
     let available_width = ctx.available_width();
     let mut block_w = available_width;
@@ -175,10 +169,10 @@ pub(crate) fn layout_flex_container(
                     before_style,
                     el,
                     inner_width.max(0.0),
-                    fonts,
+                    env.fonts,
                     containing_block,
                     positioned_depth,
-                    counter_state,
+                    env.counter_state,
                 );
             }
             if after_abs {
@@ -187,10 +181,10 @@ pub(crate) fn layout_flex_container(
                     after_style,
                     el,
                     inner_width.max(0.0),
-                    fonts,
+                    env.fonts,
                     containing_block,
                     positioned_depth,
-                    counter_state,
+                    env.counter_state,
                 );
             }
         }
@@ -231,7 +225,7 @@ pub(crate) fn layout_flex_container(
             child_el.tag,
             child_el.style_attr(),
             &parent_for_children,
-            rules,
+            env.rules,
             child_el.tag_name(),
             &classes,
             child_el.id(),
@@ -318,14 +312,12 @@ pub(crate) fn layout_flex_container(
                 &child_ctx,
                 &mut child_elements_buf,
                 None,
-                rules,
                 &child_ancestors,
                 positioned_depth,
                 idx,
                 child_count,
                 &[],
-                fonts,
-                counter_state,
+                env,
             );
             let child_h = child_elements_buf
                 .iter()
@@ -380,8 +372,8 @@ pub(crate) fn layout_flex_container(
         let mut runs = Vec::new();
         FlexTextRunCollector {
             runs: &mut runs,
-            rules,
-            fonts,
+            rules: env.rules,
+            fonts: env.fonts,
         }
         .collect(
             &child_el.children,
@@ -394,7 +386,7 @@ pub(crate) fn layout_flex_container(
         // When no explicit width/flex-basis and flex-grow is 0, measure the
         // natural (intrinsic) content width so the item shrinks to fit.
         let child_w = if !has_explicit_width && child_style.flex_grow == 0.0 && !runs.is_empty() {
-            let natural_text_w = measure_runs_width(&runs, fonts);
+            let natural_text_w = measure_runs_width(&runs, env.fonts);
             let pad_h = child_style.padding.left + child_style.padding.right;
             let border_h = if child_style.box_sizing == BoxSizing::BorderBox {
                 child_style.border.horizontal_width()
@@ -429,10 +421,10 @@ pub(crate) fn layout_flex_container(
                 TextWrapOptions::new(
                     child_inner_w.max(1.0),
                     child_style.font_size,
-                    resolved_line_height_factor(&child_style, fonts),
+                    resolved_line_height_factor(&child_style, env.fonts),
                     child_style.overflow_wrap,
                 ),
-                fonts,
+                env.fonts,
             )
         } else {
             Vec::new()
@@ -851,14 +843,12 @@ pub(crate) fn layout_flex_container(
                                 &relayout_ctx,
                                 &mut relayout_buf,
                                 None,
-                                rules,
                                 &relayout_ancestors,
                                 positioned_depth,
                                 i,
                                 child_count,
                                 &[],
-                                fonts,
-                                counter_state,
+                                env,
                             );
                             if !relayout_buf.is_empty() {
                                 items[i].elements = relayout_buf;

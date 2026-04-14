@@ -7,7 +7,7 @@ use crate::style::computed::{
 };
 use std::collections::HashMap;
 
-use super::context::{LayoutContext, ParentBox, Viewport};
+use super::context::{LayoutContext, LayoutEnv, ParentBox, Viewport};
 use super::engine::{
     CounterState, LayoutBorder, LayoutElement, TextLine, TextRun, collects_as_inline_text,
     flatten_element, has_background_paint, recurses_as_layout_child,
@@ -408,13 +408,14 @@ pub(crate) fn flatten_table(
     style: &ComputedStyle,
     available_width: f32,
     output: &mut Vec<LayoutElement>,
-    rules: &[CssRule],
-    fonts: &HashMap<String, TtfFont>,
     ancestors: &[AncestorInfo],
     table_child_index: usize,
     table_sibling_count: usize,
-    counter_state: &mut CounterState,
+    env: &mut LayoutEnv,
 ) {
+    let rules = env.rules;
+    let fonts = env.fonts;
+    let counter_state = &mut *env.counter_state;
     let inner_width = resolve_table_inner_width(style, available_width);
 
     // Build ancestor chain: everything above + the table element itself.
@@ -1260,17 +1261,20 @@ fn collect_table_cell_content_inner(
                     preceding_siblings: Vec::new(),
                 });
                 if el.tag == HtmlTag::Table {
+                    let mut inner_env = LayoutEnv {
+                        rules,
+                        fonts,
+                        counter_state,
+                    };
                     flatten_table(
                         el,
                         &style,
                         available_width,
                         nested_rows,
-                        rules,
-                        fonts,
                         &child_ancestors,
                         child_index,
                         element_sibling_count,
-                        counter_state,
+                        &mut inner_env,
                     );
                 } else if el.tag == HtmlTag::Svg
                     || (recurse_blocks
@@ -1297,20 +1301,23 @@ fn collect_table_cell_content_inner(
                         containing_block: None,
                         root_font_size: parent_style.root_font_size,
                     };
+                    let mut inner_env = LayoutEnv {
+                        rules,
+                        fonts,
+                        counter_state,
+                    };
                     flatten_element(
                         el,
                         parent_style,
                         &cell_ctx,
                         nested_rows,
                         None,
-                        rules,
                         ancestors,
                         0,
                         child_index,
                         element_sibling_count,
                         &selector_ctx.preceding_siblings,
-                        fonts,
-                        counter_state,
+                        &mut inner_env,
                     );
                 } else if recurse_blocks || collects_as_inline_text(el.tag) || el.tag == HtmlTag::Br
                 {

@@ -1,12 +1,10 @@
-use crate::parser::css::{AncestorInfo, CssRule, SelectorContext};
+use crate::parser::css::{AncestorInfo, SelectorContext};
 use crate::parser::dom::{DomNode, ElementNode};
-use crate::parser::ttf::TtfFont;
 use crate::style::computed::{
     ComputedStyle, FontWeight, GridTrack, TextAlign, VerticalAlign, compute_style_with_context,
 };
-use std::collections::HashMap;
 
-use super::context::LayoutContext;
+use super::context::{LayoutContext, LayoutEnv};
 use super::engine::{BackgroundFields, LayoutBorder, LayoutElement};
 use super::table::TableCell;
 use super::text::{
@@ -79,9 +77,8 @@ pub(crate) fn layout_grid_container(
     style: &ComputedStyle,
     ctx: &LayoutContext,
     output: &mut Vec<LayoutElement>,
-    rules: &[CssRule],
     ancestors: &[AncestorInfo],
-    fonts: &HashMap<String, TtfFont>,
+    env: &mut LayoutEnv,
 ) {
     let available_width = ctx.available_width();
     let inner_width = available_width - style.padding.left - style.padding.right;
@@ -135,7 +132,7 @@ pub(crate) fn layout_grid_container(
                 child_el.tag,
                 child_el.style_attr(),
                 style,
-                rules,
+                env.rules,
                 child_el.tag_name(),
                 &classes,
                 child_el.id(),
@@ -150,8 +147,8 @@ pub(crate) fn layout_grid_container(
             let mut runs = Vec::new();
             FlexTextRunCollector {
                 runs: &mut runs,
-                rules,
-                fonts,
+                rules: env.rules,
+                fonts: env.fonts,
             }
             .collect(
                 &child_el.children,
@@ -165,10 +162,10 @@ pub(crate) fn layout_grid_container(
                 TextWrapOptions::new(
                     cell_inner,
                     child_style.font_size,
-                    resolved_line_height_factor(&child_style, fonts),
+                    resolved_line_height_factor(&child_style, env.fonts),
                     child_style.overflow_wrap,
                 ),
-                fonts,
+                env.fonts,
             );
 
             let bg = child_style
