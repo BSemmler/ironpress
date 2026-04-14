@@ -1,18 +1,32 @@
-use crate::parser::css::{AncestorInfo, CssRule, CssValue, PseudoElement, SelectorContext};
+use crate::parser::css::{AncestorInfo, CssRule, PseudoElement, SelectorContext};
 use crate::parser::dom::{DomNode, ElementNode, HtmlTag};
-use crate::parser::png;
 use crate::parser::ttf::TtfFont;
 use crate::style::computed::{
-    AlignItems, BackgroundOrigin, BackgroundPosition, BackgroundRepeat, BackgroundSize,
-    BorderCollapse, BorderSides, BoxShadow, BoxSizing, Clear, ComputedStyle, ContentItem, Display,
-    FlexDirection, FlexWrap, Float, FontFamily, FontStyle, FontWeight, GridTrack, JustifyContent,
-    LinearGradient, ListStylePosition, ListStyleType, Overflow, OverflowWrap, Position,
-    RadialGradient, TableLayout, TextAlign, TextOverflow, Transform, VerticalAlign, Visibility,
-    WhiteSpace, compute_pseudo_element_style, compute_style_with_context,
+    BackgroundOrigin, BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderCollapse,
+    BorderSides, BoxShadow, Clear, ComputedStyle, Display, Float, FontFamily, FontStyle,
+    FontWeight, GridTrack, LinearGradient, ListStylePosition, ListStyleType, Overflow, Position,
+    RadialGradient, TextAlign, Transform, VerticalAlign, Visibility, compute_pseudo_element_style,
+    compute_style_with_context,
 };
 use crate::types::{Margin, PageSize};
-use crate::util::decode_base64;
 use std::collections::HashMap;
+
+use super::block::layout_block_element;
+use super::flex::layout_flex_container;
+use super::grid::layout_grid_container;
+pub(crate) use super::helpers::*;
+use super::images::*;
+use super::inline::{element_is_inline_block, layout_inline_block_group};
+use super::table::flatten_table;
+
+#[cfg(test)]
+use super::text::OverflowWrap;
+use super::text::{
+    TextWrapOptions, collapse_whitespace, collect_text_runs, push_text_run_with_fallback,
+    resolve_style_font_family, resolved_line_height_factor, wrap_text_runs,
+};
+#[cfg(test)]
+use crate::style::computed::ContentItem;
 
 /// A single border side for layout rendering.
 #[derive(Debug, Clone, Copy, Default)]
@@ -80,365 +94,13 @@ impl LayoutBorder {
     }
 }
 
-fn resolve_padding_box_height(
-    content_height: f32,
-    specified_height: Option<f32>,
-    padding_top: f32,
-    padding_bottom: f32,
-    border_vertical: f32,
-    box_sizing: BoxSizing,
-) -> f32 {
-    let content_based_height = padding_top + content_height + padding_bottom;
-    match specified_height {
-        Some(height) => {
-            // When height is explicitly set, use it (don't expand to fit content).
-            // This is essential for overflow: hidden to clip correctly.
-            match box_sizing {
-                BoxSizing::BorderBox => (height - border_vertical).max(0.0),
-                BoxSizing::ContentBox => height + padding_top + padding_bottom,
-            }
-        }
-        None => content_based_height,
-    }
-}
-
-fn advance_positioned_ancestors_after_page_break(
-    positioned_y_by_depth: &mut HashMap<usize, f32>,
-    consumed_height: f32,
-) {
-    for y in positioned_y_by_depth.values_mut() {
-        *y -= consumed_height;
-    }
-}
-
-fn recurses_as_layout_child(tag: HtmlTag) -> bool {
-    tag.is_block() || tag == HtmlTag::Svg
-}
-
-fn collects_as_inline_text(tag: HtmlTag) -> bool {
-    tag != HtmlTag::Svg && tag.is_inline()
-}
-
-/// Check if an element computes to `display: inline-block` given parent style and CSS rules.
-fn element_is_inline_block(
-    el: &ElementNode,
-    parent_style: &ComputedStyle,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    child_index: usize,
-    sibling_count: usize,
-    preceding_siblings: &[(String, Vec<String>)],
-) -> bool {
-    let classes = el.class_list();
-    let selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
-        child_index,
-        sibling_count,
-        preceding_siblings: preceding_siblings.to_vec(),
-    };
-    let style = compute_style_with_context(
-        el.tag,
-        el.style_attr(),
-        parent_style,
-        rules,
-        el.tag_name(),
-        &classes,
-        el.id(),
-        &el.attributes,
-        &selector_ctx,
-    );
-    // SVGs need individual block layout (they use cm operator for viewBox).
-    style.display == Display::InlineBlock
-        && el.tag != HtmlTag::Svg
-        && !el
-            .children
-            .iter()
-            .any(|c| matches!(c, DomNode::Element(e) if e.tag == HtmlTag::Svg))
-}
-
-/// Emit a `FlexRow` for a group of consecutive `display: inline-block` elements.
-///
-/// Each element is laid out independently into its own buffer, then positioned
-/// horizontally in a row, similar to how `flatten_flex_container` works.
-#[allow(clippy::too_many_arguments)]
-fn flush_inline_block_group(
-    elements: &[&ElementNode],
-    parent_style: &ComputedStyle,
-    available_width: f32,
-    _available_height: f32,
-    output: &mut Vec<LayoutElement>,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    _positioned_ancestor_depth: usize,
-    fonts: &HashMap<String, TtfFont>,
-    _counter_state: &mut CounterState,
-) {
-    if elements.is_empty() {
-        return;
-    }
-
-    // Lay out each inline-block element as a block to measure its size
-    struct InlineBlockItem {
-        width: f32,
-        height: f32,
-        lines: Vec<TextLine>,
-        background_color: Option<(f32, f32, f32, f32)>,
-        padding_top: f32,
-        padding_right: f32,
-        padding_bottom: f32,
-        padding_left: f32,
-        border: LayoutBorder,
-        border_radius: f32,
-        transform: Option<Transform>,
-        background_gradient: Option<LinearGradient>,
-        background_radial_gradient: Option<RadialGradient>,
-        background_svg: Option<crate::parser::svg::SvgTree>,
-        background_blur_radius: f32,
-        background_size: BackgroundSize,
-        background_position: BackgroundPosition,
-        background_repeat: BackgroundRepeat,
-        background_origin: BackgroundOrigin,
-        text_align: TextAlign,
-        margin_left: f32,
-        margin_right: f32,
-    }
-
-    let mut items: Vec<InlineBlockItem> = Vec::new();
-    let child_count = elements.len();
-
-    for (idx, child_el) in elements.iter().enumerate() {
-        let classes = child_el.class_list();
-        let selector_ctx = SelectorContext {
-            ancestors: ancestors.to_vec(),
-            child_index: idx,
-            sibling_count: child_count,
-            preceding_siblings: Vec::new(),
-        };
-        let child_style = compute_style_with_context(
-            child_el.tag,
-            child_el.style_attr(),
-            parent_style,
-            rules,
-            child_el.tag_name(),
-            &classes,
-            child_el.id(),
-            &child_el.attributes,
-            &selector_ctx,
-        );
-
-        if child_style.display == Display::None {
-            continue;
-        }
-
-        // Determine the element width
-        let has_explicit_width = child_style.width.is_some();
-        let child_w = child_style.width.unwrap_or(0.0);
-        let child_h = child_style.height.unwrap_or(0.0);
-
-        let inner_width = if has_explicit_width {
-            if child_style.box_sizing == BoxSizing::BorderBox {
-                child_w
-                    - child_style.padding.left
-                    - child_style.padding.right
-                    - child_style.border.horizontal_width()
-            } else {
-                child_w
-            }
-            .max(0.0)
-        } else {
-            // No explicit width: use available width for shrink-to-fit
-            available_width
-        };
-
-        // Collect text runs from the inline-block element's children
-        let mut child_ancestors = ancestors.to_vec();
-        child_ancestors.push(AncestorInfo {
-            element: child_el,
-            child_index: idx,
-            sibling_count: child_count,
-            preceding_siblings: Vec::new(),
-        });
-        let mut runs = Vec::new();
-        FlexTextRunCollector {
-            runs: &mut runs,
-            rules,
-            fonts,
-        }
-        .collect(
-            &child_el.children,
-            &child_style,
-            None,
-            (0.0, 0.0),
-            &child_ancestors,
-        );
-
-        let lines = if !runs.is_empty() {
-            wrap_text_runs(
-                runs,
-                TextWrapOptions::new(
-                    inner_width.max(1.0),
-                    child_style.font_size,
-                    resolved_line_height_factor(&child_style, fonts),
-                    child_style.overflow_wrap,
-                ),
-                fonts,
-            )
-        } else {
-            Vec::new()
-        };
-
-        // Total element width including padding + border
-        let content_w = if has_explicit_width {
-            child_w
-        } else {
-            // Shrink-to-fit: use the widest line
-            lines
-                .iter()
-                .map(|l| {
-                    l.runs
-                        .iter()
-                        .map(|r| {
-                            crate::fonts::str_width(&r.text, r.font_size, &r.font_family, r.bold)
-                        })
-                        .sum::<f32>()
-                })
-                .fold(0.0f32, f32::max)
-        };
-        let total_w = if child_style.box_sizing == BoxSizing::BorderBox && has_explicit_width {
-            content_w
-        } else {
-            content_w
-                + child_style.padding.left
-                + child_style.padding.right
-                + child_style.border.horizontal_width()
-        };
-
-        // Total element height including padding + border
-        let text_height: f32 = lines.iter().map(|l| l.height).sum();
-        let content_h = if child_h > 0.0 { child_h } else { text_height };
-        let total_h = if child_style.box_sizing == BoxSizing::BorderBox {
-            content_h.max(child_h)
-        } else {
-            content_h
-                + child_style.padding.top
-                + child_style.padding.bottom
-                + child_style.border.vertical_width()
-        };
-
-        let bg = child_style
-            .background_color
-            .map(|c: crate::types::Color| c.to_f32_rgba());
-        let bg_fields = BackgroundFields::from_style(&child_style);
-
-        items.push(InlineBlockItem {
-            width: total_w,
-            height: total_h,
-            lines,
-            background_color: bg,
-            padding_top: child_style.padding.top,
-            padding_right: child_style.padding.right,
-            padding_bottom: child_style.padding.bottom,
-            padding_left: child_style.padding.left,
-            border: LayoutBorder::from_computed(&child_style.border),
-            border_radius: child_style.border_radius,
-            transform: child_style.transform,
-            background_gradient: bg_fields.gradient,
-            background_radial_gradient: bg_fields.radial_gradient,
-            background_svg: bg_fields.svg,
-            background_blur_radius: bg_fields.blur_radius,
-            background_size: bg_fields.size,
-            background_position: bg_fields.position,
-            background_repeat: bg_fields.repeat,
-            background_origin: bg_fields.origin,
-            text_align: child_style.text_align,
-            margin_left: child_style.margin.left,
-            margin_right: child_style.margin.right,
-        });
-    }
-
-    if items.is_empty() {
-        return;
-    }
-
-    // Position items horizontally, wrapping to new rows when they exceed available width
-    let mut rows: Vec<(Vec<FlexCell>, f32)> = Vec::new(); // (cells, row_height)
-    let mut current_cells: Vec<FlexCell> = Vec::new();
-    let mut x = 0.0f32;
-    let mut row_height = 0.0f32;
-
-    for item in &items {
-        let item_total_w = item.margin_left + item.width + item.margin_right;
-        // Wrap to new row if this item would overflow
-        if !current_cells.is_empty() && x + item_total_w > available_width + 0.01 {
-            rows.push((std::mem::take(&mut current_cells), row_height));
-            x = 0.0;
-            row_height = 0.0;
-        }
-
-        x += item.margin_left;
-        current_cells.push(FlexCell {
-            lines: item.lines.clone(),
-            x_offset: x,
-            width: item.width,
-            text_align: item.text_align,
-            background_color: item.background_color,
-            padding_top: item.padding_top,
-            padding_right: item.padding_right,
-            padding_bottom: item.padding_bottom,
-            padding_left: item.padding_left,
-            border: item.border,
-            border_radius: item.border_radius,
-            background_gradient: item.background_gradient.clone(),
-            background_radial_gradient: item.background_radial_gradient.clone(),
-            background_svg: item.background_svg.clone(),
-            background_blur_radius: item.background_blur_radius,
-            background_size: item.background_size,
-            background_position: item.background_position,
-            background_repeat: item.background_repeat,
-            background_origin: item.background_origin,
-            transform: item.transform,
-            nested_elements: Vec::new(),
-        });
-        x += item.width + item.margin_right;
-        row_height = row_height.max(item.height);
-    }
-    // Flush last row
-    if !current_cells.is_empty() {
-        rows.push((current_cells, row_height));
-    }
-
-    for (cells, rh) in rows {
-        output.push(LayoutElement::FlexRow {
-            cells,
-            row_height: rh,
-            margin_top: 0.0,
-            margin_bottom: 0.0,
-            background_color: None,
-            container_width: available_width,
-            padding_top: 0.0,
-            padding_bottom: 0.0,
-            padding_left: 0.0,
-            padding_right: 0.0,
-            border: LayoutBorder::default(),
-            border_radius: 0.0,
-            box_shadow: None,
-            background_gradient: None,
-            background_radial_gradient: None,
-            background_svg: None,
-            background_blur_radius: 0.0,
-            background_size: BackgroundSize::Auto,
-            background_position: BackgroundPosition::default(),
-            background_repeat: BackgroundRepeat::Repeat,
-            background_origin: BackgroundOrigin::Padding,
-        });
-    }
-}
+// Inline-block layout functions moved to `super::inline`.
 
 /// Counter state for CSS counters.
 #[derive(Debug, Default, Clone)]
 #[allow(dead_code)]
-struct CounterState {
-    stacks: HashMap<String, Vec<i32>>,
+pub(crate) struct CounterState {
+    pub(crate) stacks: HashMap<String, Vec<i32>>,
 }
 #[allow(dead_code)]
 impl CounterState {
@@ -465,13 +127,13 @@ impl CounterState {
             }
         }
     }
-    fn get(&self, name: &str) -> i32 {
+    pub(crate) fn get(&self, name: &str) -> i32 {
         self.stacks
             .get(name)
             .and_then(|s| s.last().copied())
             .unwrap_or(0)
     }
-    fn get_all(&self, name: &str, sep: &str) -> String {
+    pub(crate) fn get_all(&self, name: &str, sep: &str) -> String {
         self.stacks
             .get(name)
             .map(|s| {
@@ -484,496 +146,15 @@ impl CounterState {
     }
 }
 
-fn format_list_marker(list_style_type: ListStyleType, index: usize) -> String {
-    match list_style_type {
-        ListStyleType::Disc => "\u{2022} ".to_string(),
-        ListStyleType::Circle => "\u{25E6} ".to_string(),
-        ListStyleType::Square => "\u{25AA} ".to_string(),
-        ListStyleType::Decimal => format!("{}. ", index),
-        ListStyleType::DecimalLeadingZero => format!("{:02}. ", index),
-        ListStyleType::LowerAlpha => format!("{}. ", to_alpha_lower(index)),
-        ListStyleType::UpperAlpha => format!("{}. ", to_alpha_upper(index)),
-        ListStyleType::LowerRoman => format!("{}. ", to_roman_lower(index)),
-        ListStyleType::UpperRoman => format!("{}. ", to_roman_upper(index)),
-        ListStyleType::None => String::new(),
-    }
-}
-fn to_alpha_lower(n: usize) -> String {
-    if n == 0 {
-        return "a".to_string();
-    }
-    let mut result = String::new();
-    let mut val = n;
-    while val > 0 {
-        val -= 1;
-        result.insert(0, (b'a' + (val % 26) as u8) as char);
-        val /= 26;
-    }
-    result
-}
-fn to_alpha_upper(n: usize) -> String {
-    to_alpha_lower(n).to_uppercase()
-}
-fn to_roman_lower(n: usize) -> String {
-    let vals = [
-        (1000, "m"),
-        (900, "cm"),
-        (500, "d"),
-        (400, "cd"),
-        (100, "c"),
-        (90, "xc"),
-        (50, "l"),
-        (40, "xl"),
-        (10, "x"),
-        (9, "ix"),
-        (5, "v"),
-        (4, "iv"),
-        (1, "i"),
-    ];
-    let mut result = String::new();
-    let mut remaining = n;
-    for &(value, numeral) in &vals {
-        while remaining >= value {
-            result.push_str(numeral);
-            remaining -= value;
-        }
-    }
-    if result.is_empty() {
-        "0".to_string()
-    } else {
-        result
-    }
-}
-fn to_roman_upper(n: usize) -> String {
-    to_roman_lower(n).to_uppercase()
-}
-
-fn resolve_content(
-    items: &[ContentItem],
-    attributes: &HashMap<String, String>,
-    counter_state: &CounterState,
-) -> String {
-    let mut result = String::new();
-    for item in items {
-        match item {
-            ContentItem::String(s) => result.push_str(s),
-            ContentItem::Attr(name) => {
-                if let Some(val) = attributes.get(name) {
-                    result.push_str(val);
-                }
-            }
-            ContentItem::Counter(name) => {
-                result.push_str(&counter_state.get(name).to_string());
-            }
-            ContentItem::Counters(name, sep) => {
-                result.push_str(&counter_state.get_all(name, sep));
-            }
-        }
-    }
-    result
-}
-
-fn measure_runs_width(runs: &[TextRun], fonts: &HashMap<String, TtfFont>) -> f32 {
-    runs.iter()
-        .map(|run| {
-            estimate_word_width(
-                &run.text,
-                run.font_size,
-                &run.font_family,
-                run.bold,
-                run.italic,
-                fonts,
-            )
-        })
-        .sum()
-}
-
-fn pseudo_is_block_like(pseudo_style: &ComputedStyle) -> bool {
-    pseudo_style.display == Display::Block || pseudo_style.position == Position::Absolute
-}
-
-fn append_pseudo_inline_run(
-    runs: &mut Vec<TextRun>,
-    pseudo_style: Option<&ComputedStyle>,
-    el: &ElementNode,
-    fonts: &HashMap<String, TtfFont>,
-    counter_state: &CounterState,
-) {
-    if let Some(pseudo_style) = pseudo_style {
-        if !pseudo_is_block_like(pseudo_style) {
-            runs.push(build_pseudo_inline_run(
-                pseudo_style,
-                el,
-                fonts,
-                counter_state,
-            ));
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn push_block_pseudo(
-    output: &mut Vec<LayoutElement>,
-    pseudo_style: Option<&ComputedStyle>,
-    el: &ElementNode,
-    available_width: f32,
-    fonts: &HashMap<String, TtfFont>,
-    containing_block_info: Option<ContainingBlock>,
-    positioned_ancestor_depth: usize,
-    counter_state: &CounterState,
-) {
-    if let Some(pseudo_style) = pseudo_style {
-        if pseudo_is_block_like(pseudo_style) {
-            let pseudo_cb = if pseudo_style.position == Position::Absolute {
-                containing_block_info
-            } else {
-                None
-            };
-            output.push(build_pseudo_block(
-                pseudo_style,
-                el,
-                available_width,
-                fonts,
-                pseudo_cb,
-                positioned_ancestor_depth,
-                counter_state,
-            ));
-        }
-    }
-}
-
-/// Build a `LayoutElement::TextBlock` for a `::before` or `::after` pseudo-element
-/// that uses `display: block` (or `position: absolute`).
-fn build_pseudo_block(
-    pseudo_style: &ComputedStyle,
-    el: &ElementNode,
-    available_width: f32,
-    fonts: &HashMap<String, TtfFont>,
-    containing_block_info: Option<ContainingBlock>,
-    positioned_ancestor_depth: usize,
-    counter_state: &CounterState,
-) -> LayoutElement {
-    let content_text = resolve_content(&pseudo_style.content, &el.attributes, counter_state);
-    let mut block_w = available_width;
-    if let Some(cb) = containing_block_info
-        && let Some(percent) = pseudo_style.percentage_sizing.width
-    {
-        block_w = cb.width * percent / 100.0;
-    }
-    if let Some(w) = pseudo_style.width {
-        block_w = w.min(available_width);
-    }
-    if let Some(cb) = containing_block_info {
-        if let Some(percent) = pseudo_style.percentage_sizing.min_width {
-            block_w = block_w.max(cb.width * percent / 100.0);
-        }
-        if let Some(percent) = pseudo_style.percentage_sizing.max_width {
-            block_w = block_w.min(cb.width * percent / 100.0);
-        }
-    }
-
-    let inner_w = if pseudo_style.box_sizing == BoxSizing::BorderBox {
-        block_w
-            - pseudo_style.padding.left
-            - pseudo_style.padding.right
-            - pseudo_style.border.horizontal_width()
-    } else {
-        block_w - pseudo_style.padding.left - pseudo_style.padding.right
-    }
-    .max(0.0);
-
-    let mut lines = Vec::new();
-    let mut runs = Vec::new();
-    if !content_text.is_empty() {
-        push_text_run_with_fallback(
-            TextRun {
-                text: content_text,
-                font_size: pseudo_style.font_size,
-                bold: pseudo_style.font_weight == FontWeight::Bold,
-                italic: pseudo_style.font_style == FontStyle::Italic,
-                underline: pseudo_style.text_decoration_underline,
-                line_through: pseudo_style.text_decoration_line_through,
-                color: pseudo_style.color.to_f32_rgb(),
-                link_url: None,
-                font_family: resolve_style_font_family(pseudo_style, fonts),
-                background_color: None,
-                padding: (0.0, 0.0),
-                border_radius: 0.0,
-            },
-            &mut runs,
-            fonts,
-        );
-        lines = wrap_text_runs(
-            runs.clone(),
-            TextWrapOptions::new(
-                inner_w,
-                pseudo_style.font_size,
-                resolved_line_height_factor(pseudo_style, fonts),
-                pseudo_style.overflow_wrap,
-            ),
-            fonts,
-        );
-    }
-
-    if pseudo_style.position == Position::Absolute
-        && pseudo_style.width.is_none()
-        && pseudo_style.min_width.is_none()
-    {
-        let content_w = measure_runs_width(&runs, fonts);
-        block_w = if pseudo_style.box_sizing == BoxSizing::BorderBox {
-            content_w
-                + pseudo_style.padding.left
-                + pseudo_style.padding.right
-                + pseudo_style.border.horizontal_width()
-        } else {
-            content_w + pseudo_style.padding.left + pseudo_style.padding.right
-        };
-    }
-
-    let bg = pseudo_style.background_color.map(|c| c.to_f32_rgba());
-    let border = LayoutBorder::from_computed(&pseudo_style.border);
-    let BackgroundFields {
-        gradient: background_gradient,
-        radial_gradient: background_radial_gradient,
-        svg: background_svg,
-        blur_radius: background_blur_radius,
-        size: background_size,
-        position: background_position,
-        repeat: background_repeat,
-        origin: background_origin,
-    } = BackgroundFields::from_style(pseudo_style);
-
-    let explicit_width = if pseudo_style.position == Position::Absolute
-        || pseudo_style.width.is_some()
-        || pseudo_style.min_width.is_some()
-    {
-        Some(block_w)
-    } else {
-        None
-    };
-
-    let effective_height = {
-        let mut h = pseudo_style.height;
-        if let Some(cb) = containing_block_info
-            && let Some(percent) = pseudo_style.percentage_sizing.height
-        {
-            h = Some(cb.height * percent / 100.0);
-        }
-        if let Some(min_h) = pseudo_style.min_height {
-            h = Some(h.map_or(min_h, |v| v.max(min_h)));
-        }
-        if let Some(cb) = containing_block_info
-            && let Some(percent) = pseudo_style.percentage_sizing.min_height
-        {
-            let min_h = cb.height * percent / 100.0;
-            h = Some(h.map_or(min_h, |v| v.max(min_h)));
-        }
-        if let Some(max_h) = pseudo_style.max_height {
-            h = h.map(|v| v.min(max_h));
-        }
-        if let Some(cb) = containing_block_info
-            && let Some(percent) = pseudo_style.percentage_sizing.max_height
-        {
-            let max_h = cb.height * percent / 100.0;
-            h = h.map_or(Some(max_h), |v| Some(v.min(max_h)));
-        }
-        h
-    };
-    let text_height: f32 = lines.iter().map(|l| l.height).sum();
-    let padding_box_height = resolve_padding_box_height(
-        text_height,
-        effective_height,
-        pseudo_style.padding.top,
-        pseudo_style.padding.bottom,
-        border.vertical_width(),
-        pseudo_style.box_sizing,
-    );
-
-    // Resolve bottom/right into top/left when a containing block is present.
-    // This allows pagination and rendering to only deal with top/left offsets.
-    let (resolved_top, resolved_left) = if let Some(cb) = containing_block_info {
-        let elem_h = padding_box_height;
-        let elem_w = explicit_width.unwrap_or(block_w);
-        let top_from_percent = pseudo_style
-            .percentage_insets
-            .top
-            .map(|percent| cb.height * percent / 100.0);
-        let bottom_from_percent = pseudo_style
-            .percentage_insets
-            .bottom
-            .map(|percent| cb.height * percent / 100.0);
-        let left_from_percent = pseudo_style
-            .percentage_insets
-            .left
-            .map(|percent| cb.width * percent / 100.0);
-        let right_from_percent = pseudo_style
-            .percentage_insets
-            .right
-            .map(|percent| cb.width * percent / 100.0);
-
-        let top = if let Some(top) = top_from_percent.or(pseudo_style.top) {
-            top
-        } else if let Some(bottom) = bottom_from_percent.or(pseudo_style.bottom) {
-            cb.height - elem_h - bottom
-        } else {
-            0.0
-        };
-        let left = if let Some(left) = left_from_percent.or(pseudo_style.left) {
-            left
-        } else if let Some(right) = right_from_percent.or(pseudo_style.right) {
-            cb.width - elem_w - right
-        } else {
-            0.0
-        };
-        (top, left)
-    } else {
-        (
-            pseudo_style.top.unwrap_or(0.0),
-            pseudo_style.left.unwrap_or(0.0),
-        )
-    };
-
-    LayoutElement::TextBlock {
-        lines,
-        margin_top: pseudo_style.margin.top,
-        margin_bottom: pseudo_style.margin.bottom,
-        text_align: pseudo_style.text_align,
-        background_color: bg,
-        padding_top: pseudo_style.padding.top,
-        padding_bottom: pseudo_style.padding.bottom,
-        padding_left: pseudo_style.padding.left,
-        padding_right: pseudo_style.padding.right,
-        border,
-        block_width: explicit_width,
-        block_height: effective_height.map(|_| padding_box_height),
-        opacity: pseudo_style.opacity,
-        float: pseudo_style.float,
-        clear: pseudo_style.clear,
-        position: pseudo_style.position,
-        offset_top: resolved_top,
-        offset_left: resolved_left,
-        offset_bottom: pseudo_style.bottom.unwrap_or(0.0),
-        offset_right: pseudo_style.right.unwrap_or(0.0),
-        containing_block: containing_block_info,
-        box_shadow: pseudo_style.box_shadow,
-        visible: pseudo_style.visibility == Visibility::Visible,
-        clip_rect: None,
-        transform: pseudo_style.transform,
-        border_radius: pseudo_style.border_radius,
-        outline_width: pseudo_style.outline_width,
-        outline_color: pseudo_style.outline_color.map(|c| c.to_f32_rgb()),
-        text_indent: pseudo_style.text_indent,
-        letter_spacing: pseudo_style.letter_spacing,
-        word_spacing: pseudo_style.word_spacing,
-        vertical_align: pseudo_style.vertical_align,
-        background_gradient,
-        background_radial_gradient,
-        background_svg,
-        background_blur_radius,
-        background_size,
-        background_position,
-        background_repeat,
-        background_origin,
-        z_index: pseudo_style.z_index,
-        repeat_on_each_page: false,
-        positioned_depth: if pseudo_style.position == Position::Relative
-            || pseudo_style.position == Position::Absolute
-        {
-            positioned_ancestor_depth + 1
-        } else {
-            positioned_ancestor_depth
-        },
-        heading_level: None,
-        clip_children_count: 0,
-    }
-}
-
-fn resolve_style_font_family(
-    style: &ComputedStyle,
-    fonts: &HashMap<String, TtfFont>,
-) -> FontFamily {
-    crate::system_fonts::resolve_font_family(
-        &style.font_stack,
-        fonts,
-        style.font_weight == FontWeight::Bold,
-        style.font_style == FontStyle::Italic,
-    )
-}
-
-fn resolved_line_height_factor(style: &ComputedStyle, fonts: &HashMap<String, TtfFont>) -> f32 {
-    if style.line_height.is_nan() {
-        let font_family = resolve_style_font_family(style, fonts);
-        crate::fonts::normal_line_height_factor(
-            &font_family,
-            style.font_weight == FontWeight::Bold,
-            style.font_style == FontStyle::Italic,
-            fonts,
-        )
-    } else {
-        style.line_height
-    }
-}
-
-/// Build a `TextRun` for an inline `::before` or `::after` pseudo-element.
-fn build_pseudo_inline_run(
-    pseudo_style: &ComputedStyle,
-    el: &ElementNode,
-    fonts: &HashMap<String, TtfFont>,
-    counter_state: &CounterState,
-) -> TextRun {
-    let content_text = resolve_content(&pseudo_style.content, &el.attributes, counter_state);
-    TextRun {
-        text: content_text,
-        font_size: pseudo_style.font_size,
-        bold: pseudo_style.font_weight == FontWeight::Bold,
-        italic: pseudo_style.font_style == FontStyle::Italic,
-        underline: pseudo_style.text_decoration_underline,
-        line_through: pseudo_style.text_decoration_line_through,
-        color: pseudo_style.color.to_f32_rgb(),
-        link_url: None,
-        font_family: resolve_style_font_family(pseudo_style, fonts),
-        background_color: pseudo_style.background_color.map(|c| c.to_f32_rgba()),
-        padding: (0.0, 0.0),
-        border_radius: 0.0,
-    }
-}
-
 /// Context for rendering list items.
 #[derive(Debug, Clone)]
-enum ListContext {
+pub(crate) enum ListContext {
     Unordered { indent: f32 },
     Ordered { index: usize, indent: f32 },
 }
 
-/// A table cell ready for rendering.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct TableCell {
-    pub lines: Vec<TextLine>,
-    pub nested_rows: Vec<LayoutElement>,
-    pub bold: bool,
-    pub background_color: Option<(f32, f32, f32, f32)>,
-    pub padding_top: f32,
-    pub padding_right: f32,
-    pub padding_bottom: f32,
-    pub padding_left: f32,
-    /// Number of columns this cell spans (default 1).
-    pub colspan: usize,
-    /// Number of rows this cell spans (default 1).
-    pub rowspan: usize,
-    /// Per-side border specification.
-    pub border: LayoutBorder,
-    /// Text alignment within the cell.
-    pub text_align: TextAlign,
-    /// Vertical alignment within the row box.
-    pub vertical_align: VerticalAlign,
-}
-
-pub(crate) fn table_cell_content_height(cell: &TableCell) -> f32 {
-    let text_h: f32 = cell.lines.iter().map(|l| l.height).sum();
-    let nested_h: f32 = cell.nested_rows.iter().map(estimate_element_height).sum();
-    cell.padding_top + text_h + nested_h + cell.padding_bottom
-}
+pub use super::table::TableCell;
+pub(crate) use super::table::table_cell_content_height;
 
 /// A cell within a flex row, with its computed x-offset and width.
 #[derive(Debug, Clone)]
@@ -1001,71 +182,6 @@ pub struct FlexCell {
     pub transform: Option<Transform>,
     /// Nested layout elements for complex flex items (tables, images, etc.)
     pub nested_elements: Vec<LayoutElement>,
-}
-
-#[derive(Debug, Clone)]
-struct BackgroundFields {
-    gradient: Option<LinearGradient>,
-    radial_gradient: Option<RadialGradient>,
-    svg: Option<crate::parser::svg::SvgTree>,
-    blur_radius: f32,
-    size: BackgroundSize,
-    position: BackgroundPosition,
-    repeat: BackgroundRepeat,
-    origin: BackgroundOrigin,
-}
-
-impl BackgroundFields {
-    fn from_style(style: &ComputedStyle) -> Self {
-        Self {
-            gradient: style.background_gradient.clone(),
-            radial_gradient: style.background_radial_gradient.clone(),
-            svg: background_svg_for_style(style),
-            blur_radius: style.blur_radius,
-            size: style.background_size,
-            position: style.background_position,
-            repeat: style.background_repeat,
-            origin: style.background_origin,
-        }
-    }
-
-    fn none() -> Self {
-        Self {
-            gradient: None,
-            radial_gradient: None,
-            svg: None,
-            blur_radius: 0.0,
-            size: BackgroundSize::Auto,
-            position: BackgroundPosition::default(),
-            repeat: BackgroundRepeat::Repeat,
-            origin: BackgroundOrigin::Padding,
-        }
-    }
-}
-
-fn has_background_paint(style: &ComputedStyle) -> bool {
-    style.background_color.is_some()
-        || style.background_gradient.is_some()
-        || style.background_radial_gradient.is_some()
-        || style.background_image.is_some()
-        || style.background_svg.is_some()
-}
-
-fn background_svg_for_style(style: &ComputedStyle) -> Option<crate::parser::svg::SvgTree> {
-    style.background_svg.clone().or_else(|| {
-        style
-            .background_image
-            .as_deref()
-            .and_then(build_raster_background_tree)
-    })
-}
-
-fn aspect_ratio_height(width: f32, style: &ComputedStyle) -> Option<f32> {
-    style
-        .aspect_ratio
-        .filter(|ratio| *ratio > 0.0)
-        .map(|ratio| width / ratio)
-        .filter(|height| *height > 0.0)
 }
 
 /// A styled text run (a piece of text with uniform style).
@@ -1119,20 +235,7 @@ pub struct RasterImageAsset {
     pub png_metadata: Option<PngMetadata>,
 }
 
-/// Containing block information for `position: absolute` elements.
-/// Stores the containing block's position and dimensions so the renderer
-/// can resolve offsets relative to the nearest positioned ancestor.
-#[derive(Debug, Clone, Copy)]
-pub struct ContainingBlock {
-    /// X-offset of the containing block's left edge from the page left margin.
-    pub x: f32,
-    /// Width of the containing block.
-    pub width: f32,
-    /// Height of the containing block.
-    pub height: f32,
-    /// Depth of the positioned ancestor in the layout stack.
-    pub depth: usize,
-}
+pub use super::context::*;
 
 /// A layout element ready for rendering.
 #[derive(Debug, Clone)]
@@ -1332,17 +435,6 @@ pub enum LayoutElement {
     PageBreak,
 }
 
-pub(crate) fn layout_element_paint_order(element: &LayoutElement) -> (i32, i32) {
-    match element {
-        LayoutElement::TextBlock {
-            repeat_on_each_page: true,
-            ..
-        } => (i32::MIN, 0),
-        LayoutElement::TextBlock { z_index, .. } => (0, *z_index),
-        _ => (0, 0),
-    }
-}
-
 /// A fully laid-out page.
 pub struct Page {
     pub elements: Vec<(f32, LayoutElement)>, // (y_position, element)
@@ -1392,6 +484,8 @@ pub fn layout_with_rules_and_fonts(
     let content_height = page_size.height - margin.top - margin.bottom;
     parent_style.width = Some(available_width);
     parent_style.root_font_size = parent_style.font_size;
+    parent_style.viewport_width = page_size.width;
+    parent_style.viewport_height = page_size.height;
 
     // First, flatten DOM into layout elements
     let mut elements = Vec::new();
@@ -1461,40 +555,57 @@ pub fn layout_with_rules_and_fonts(
 
     let ancestors: Vec<AncestorInfo> = Vec::new();
     let mut counter_state = CounterState::default();
+    let root_ctx = LayoutContext {
+        viewport: Viewport {
+            width: available_width,
+            height: content_height,
+        },
+        parent: ParentBox {
+            content_width: available_width,
+            content_height: Some(content_height),
+            font_size: parent_style.font_size,
+        },
+        containing_block: None,
+        root_font_size: parent_style.root_font_size,
+    };
+    let mut env = LayoutEnv {
+        rules,
+        fonts: custom_fonts,
+        counter_state: &mut counter_state,
+    };
     flatten_nodes(
         nodes,
         &parent_style,
-        available_width,
-        content_height,
+        &root_ctx,
         &mut elements,
         None,
-        rules,
         &ancestors,
         0,
-        custom_fonts,
-        None,
-        &mut counter_state,
+        &mut env,
     );
 
     // Then paginate
-    paginate(elements, content_height)
+    super::paginate::paginate(elements, content_height)
 }
 
+/// Flatten a list of DOM nodes into layout elements.
+///
+/// Iterates over `nodes`, collecting inline-block groups and dispatching
+/// each element to [`flatten_element`]. Text nodes between elements
+/// trigger inline-block group flushes when non-whitespace.
 #[allow(clippy::too_many_arguments)]
 fn flatten_nodes(
     nodes: &[DomNode],
     parent_style: &ComputedStyle,
-    available_width: f32,
-    available_height: f32,
+    ctx: &LayoutContext,
     output: &mut Vec<LayoutElement>,
     list_ctx: Option<&ListContext>,
-    rules: &[CssRule],
     ancestors: &[AncestorInfo],
     positioned_ancestor_depth: usize,
-    fonts: &HashMap<String, TtfFont>,
-    abs_containing_block: Option<ContainingBlock>,
-    counter_state: &mut CounterState,
+    env: &mut LayoutEnv,
 ) {
+    let ib_ctx = *ctx;
+
     // Count element children for sibling context
     let element_count = nodes
         .iter()
@@ -1513,31 +624,17 @@ fn flatten_nodes(
     fn flush_ib(
         group: &mut Vec<&ElementNode>,
         parent_style: &ComputedStyle,
-        available_width: f32,
-        available_height: f32,
+        ctx: &LayoutContext,
         output: &mut Vec<LayoutElement>,
         rules: &[CssRule],
         ancestors: &[AncestorInfo],
-        positioned_ancestor_depth: usize,
         fonts: &HashMap<String, TtfFont>,
-        counter_state: &mut CounterState,
     ) {
         if group.is_empty() {
             return;
         }
         let taken: Vec<&ElementNode> = group.drain(..).collect();
-        flush_inline_block_group(
-            &taken,
-            parent_style,
-            available_width,
-            available_height,
-            output,
-            rules,
-            ancestors,
-            positioned_ancestor_depth,
-            fonts,
-            counter_state,
-        );
+        layout_inline_block_group(&taken, parent_style, ctx, output, rules, ancestors, fonts);
     }
 
     for node in nodes {
@@ -1551,14 +648,11 @@ fn flatten_nodes(
                     flush_ib(
                         &mut ib_group,
                         parent_style,
-                        available_width,
-                        available_height,
+                        &ib_ctx,
                         output,
-                        list_ctx.map(|_| rules).unwrap_or(rules),
+                        list_ctx.map(|_| env.rules).unwrap_or(env.rules),
                         ancestors,
-                        positioned_ancestor_depth,
-                        fonts,
-                        counter_state,
+                        env.fonts,
                     );
                 }
                 if !trimmed.is_empty() {
@@ -1573,23 +667,23 @@ fn flatten_nodes(
                             line_through: parent_style.text_decoration_line_through,
                             color: parent_style.color.to_f32_rgb(),
                             link_url: None,
-                            font_family: resolve_style_font_family(parent_style, fonts),
+                            font_family: resolve_style_font_family(parent_style, env.fonts),
                             background_color: None,
                             padding: (0.0, 0.0),
                             border_radius: 0.0,
                         },
                         &mut text_runs,
-                        fonts,
+                        env.fonts,
                     );
                     let lines = wrap_text_runs(
                         text_runs,
                         TextWrapOptions::new(
-                            available_width,
+                            ctx.available_width(),
                             parent_style.font_size,
-                            resolved_line_height_factor(parent_style, fonts),
+                            resolved_line_height_factor(parent_style, env.fonts),
                             parent_style.overflow_wrap,
                         ),
-                        fonts,
+                        env.fonts,
                     );
                     if !lines.is_empty() {
                         output.push(LayoutElement::TextBlock {
@@ -1647,7 +741,7 @@ fn flatten_nodes(
                 if element_is_inline_block(
                     el,
                     parent_style,
-                    rules,
+                    env.rules,
                     ancestors,
                     element_index,
                     element_count,
@@ -1659,31 +753,24 @@ fn flatten_nodes(
                     flush_ib(
                         &mut ib_group,
                         parent_style,
-                        available_width,
-                        available_height,
+                        &ib_ctx,
                         output,
-                        rules,
+                        env.rules,
                         ancestors,
-                        positioned_ancestor_depth,
-                        fonts,
-                        counter_state,
+                        env.fonts,
                     );
                     flatten_element(
                         el,
                         parent_style,
-                        available_width,
-                        available_height,
+                        &ib_ctx,
                         output,
                         list_ctx,
-                        rules,
                         ancestors,
                         positioned_ancestor_depth,
                         element_index,
                         element_count,
                         &preceding_siblings,
-                        fonts,
-                        abs_containing_block,
-                        counter_state,
+                        env,
                     );
                 }
                 // Track this element as a preceding sibling for the next element
@@ -1699,49 +786,35 @@ fn flatten_nodes(
     flush_ib(
         &mut ib_group,
         parent_style,
-        available_width,
-        available_height,
+        &ib_ctx,
         output,
-        rules,
+        env.rules,
         ancestors,
-        positioned_ancestor_depth,
-        fonts,
-        counter_state,
+        env.fonts,
     );
 }
 
+/// Flatten a single DOM element into layout elements.
+///
+/// Computes the element's style, handles special tags (math, br, hr, img,
+/// svg, form controls, media, tables, lists), then delegates to
+/// [`route_element`] for display-mode dispatching.
 #[allow(clippy::too_many_arguments)]
-/// Returns the heading level (1-6) for a tag, or None if not a heading.
-fn heading_level(tag: HtmlTag) -> Option<u8> {
-    match tag {
-        HtmlTag::H1 => Some(1),
-        HtmlTag::H2 => Some(2),
-        HtmlTag::H3 => Some(3),
-        HtmlTag::H4 => Some(4),
-        HtmlTag::H5 => Some(5),
-        HtmlTag::H6 => Some(6),
-        _ => None,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn flatten_element(
+pub(crate) fn flatten_element(
     el: &ElementNode,
     parent_style: &ComputedStyle,
-    available_width: f32,
-    available_height: f32,
+    ctx: &LayoutContext,
     output: &mut Vec<LayoutElement>,
     list_ctx: Option<&ListContext>,
-    rules: &[CssRule],
     ancestors: &[AncestorInfo],
     positioned_ancestor_depth: usize,
     child_index: usize,
     sibling_count: usize,
     preceding_siblings: &[(String, Vec<String>)],
-    fonts: &HashMap<String, TtfFont>,
-    abs_containing_block: Option<ContainingBlock>,
-    counter_state: &mut CounterState,
+    env: &mut LayoutEnv,
 ) {
+    let available_width = ctx.available_width();
+    let available_height = ctx.available_height();
     let classes = el.class_list();
     let selector_ctx = SelectorContext {
         ancestors: ancestors.to_vec(),
@@ -1753,7 +826,7 @@ fn flatten_element(
         el.tag,
         el.style_attr(),
         parent_style,
-        rules,
+        env.rules,
         el.tag_name(),
         &classes,
         el.id(),
@@ -1762,8 +835,8 @@ fn flatten_element(
     );
 
     // Apply CSS counter operations for this element.
-    counter_state.apply_resets(&style.counter_reset);
-    counter_state.apply_increments(&style.counter_increment);
+    env.counter_state.apply_resets(&style.counter_reset);
+    env.counter_state.apply_increments(&style.counter_increment);
 
     // Bail out on excessively deep nesting to prevent stack overflow.
     if ancestors.len() > 30 {
@@ -1771,6 +844,12 @@ fn flatten_element(
     }
 
     let available_height = style.height.unwrap_or(available_height);
+    // Update context when element narrows the available height.
+    let layout_ctx = if style.height.is_some() {
+        ctx.with_parent(available_width, Some(available_height), style.font_size)
+    } else {
+        *ctx
+    };
     let positioned_depth =
         if style.position == Position::Relative || style.position == Position::Absolute {
             positioned_ancestor_depth + 1
@@ -1823,12 +902,12 @@ fn flatten_element(
                 line_through: false,
                 color: (0.0, 0.0, 0.0),
                 link_url: None,
-                font_family: resolve_style_font_family(&style, fonts),
+                font_family: resolve_style_font_family(&style, env.fonts),
                 background_color: None,
                 padding: (0.0, 0.0),
                 border_radius: 0.0,
             }],
-            height: style.font_size * resolved_line_height_factor(&style, fonts),
+            height: style.font_size * resolved_line_height_factor(&style, env.fonts),
         };
         output.push(LayoutElement::TextBlock {
             lines: vec![line],
@@ -1892,7 +971,11 @@ fn flatten_element(
         if let Some(img_element) =
             load_image_from_element(el, available_width, available_height, &style)
         {
-            output.push(add_inline_replaced_baseline_gap(img_element, &style, fonts));
+            output.push(add_inline_replaced_baseline_gap(
+                img_element,
+                &style,
+                env.fonts,
+            ));
         }
         return;
     }
@@ -1983,13 +1066,13 @@ fn flatten_element(
                     line_through: false,
                     color: style.color.to_f32_rgb(),
                     link_url: None,
-                    font_family: resolve_style_font_family(&style, fonts),
+                    font_family: resolve_style_font_family(&style, env.fonts),
                     background_color: None,
                     padding: (0.0, 0.0),
                     border_radius: 0.0,
                 },
                 &mut runs,
-                fonts,
+                env.fonts,
             );
             let inner_w = ctrl_width - style.padding.left - style.padding.right;
             lines = wrap_text_runs(
@@ -1997,10 +1080,10 @@ fn flatten_element(
                 TextWrapOptions::new(
                     inner_w,
                     style.font_size,
-                    resolved_line_height_factor(&style, fonts),
+                    resolved_line_height_factor(&style, env.fonts),
                     style.overflow_wrap,
                 ),
-                fonts,
+                env.fonts,
             );
         }
 
@@ -2137,23 +1220,23 @@ fn flatten_element(
                 line_through: false,
                 color: text_color,
                 link_url: None,
-                font_family: resolve_style_font_family(&style, fonts),
+                font_family: resolve_style_font_family(&style, env.fonts),
                 background_color: None,
                 padding: (0.0, 0.0),
                 border_radius: 0.0,
             },
             &mut runs,
-            fonts,
+            env.fonts,
         );
         let lines = wrap_text_runs(
             runs,
             TextWrapOptions::new(
                 media_width,
                 style.font_size,
-                resolved_line_height_factor(&style, fonts),
+                resolved_line_height_factor(&style, env.fonts),
                 style.overflow_wrap,
             ),
-            fonts,
+            env.fonts,
         );
 
         output.push(LayoutElement::TextBlock {
@@ -2279,12 +1362,10 @@ fn flatten_element(
             &style,
             available_width,
             output,
-            rules,
-            fonts,
             ancestors,
             child_index,
             sibling_count,
-            counter_state,
+            env,
         );
         return;
     }
@@ -2327,43 +1408,41 @@ fn flatten_element(
         for child in &el.children {
             if let DomNode::Element(child_el) = child {
                 if child_el.tag == HtmlTag::Li {
+                    let child_ctx = layout_ctx
+                        .with_parent(inner_width, Some(available_height), style.font_size)
+                        .with_containing_block(None);
                     flatten_element(
                         child_el,
                         &style,
-                        inner_width,
-                        available_height,
+                        &child_ctx,
                         output,
                         Some(&ctx),
-                        rules,
                         &child_ancestors,
                         positioned_depth,
                         child_el_idx,
                         child_el_count,
                         &[],
-                        fonts,
-                        None,
-                        counter_state,
+                        env,
                     );
                     if let ListContext::Ordered { index, .. } = &mut ctx {
                         *index += 1;
                     }
                 } else {
+                    let child_ctx = layout_ctx
+                        .with_parent(inner_width, Some(available_height), style.font_size)
+                        .with_containing_block(None);
                     flatten_element(
                         child_el,
                         &style,
-                        inner_width,
-                        available_height,
+                        &child_ctx,
                         output,
                         None,
-                        rules,
                         &child_ancestors,
                         positioned_depth,
                         child_el_idx,
                         child_el_count,
                         &[],
-                        fonts,
-                        None,
-                        counter_state,
+                        env,
                     );
                 }
                 child_el_idx += 1;
@@ -2391,7 +1470,7 @@ fn flatten_element(
         };
         let li_before = compute_pseudo_element_style(
             &style,
-            rules,
+            env.rules,
             el.tag_name(),
             &classes,
             el.id(),
@@ -2402,7 +1481,7 @@ fn flatten_element(
         let has_custom_before = li_before.as_ref().is_some_and(|s| !s.content.is_empty());
         if has_custom_before {
             let ps = li_before.as_ref().unwrap();
-            let content_text = resolve_content(&ps.content, &el.attributes, counter_state);
+            let content_text = resolve_content(&ps.content, &el.attributes, env.counter_state);
             if !content_text.is_empty() {
                 push_text_run_with_fallback(
                     TextRun {
@@ -2414,13 +1493,13 @@ fn flatten_element(
                         line_through: ps.text_decoration_line_through,
                         color: ps.color.to_f32_rgb(),
                         link_url: None,
-                        font_family: resolve_style_font_family(ps, fonts),
+                        font_family: resolve_style_font_family(ps, env.fonts),
                         background_color: None,
                         padding: (0.0, 0.0),
                         border_radius: 0.0,
                     },
                     &mut runs,
-                    fonts,
+                    env.fonts,
                 );
             }
         }
@@ -2463,13 +1542,13 @@ fn flatten_element(
                     line_through: false,
                     color: style.color.to_f32_rgb(),
                     link_url: None,
-                    font_family: resolve_style_font_family(&style, fonts),
+                    font_family: resolve_style_font_family(&style, env.fonts),
                     background_color: None,
                     padding: (0.0, 0.0),
                     border_radius: 0.0,
                 },
                 &mut runs,
-                fonts,
+                env.fonts,
             );
         }
 
@@ -2478,8 +1557,8 @@ fn flatten_element(
             &style,
             &mut runs,
             None,
-            rules,
-            fonts,
+            env.rules,
+            env.fonts,
             ancestors,
         );
 
@@ -2491,10 +1570,10 @@ fn flatten_element(
                 TextWrapOptions::new(
                     inner_width,
                     style.font_size,
-                    resolved_line_height_factor(&style, fonts),
+                    resolved_line_height_factor(&style, env.fonts),
                     style.overflow_wrap,
                 ),
-                fonts,
+                env.fonts,
             );
             let BackgroundFields {
                 gradient: background_gradient,
@@ -2565,40 +1644,38 @@ fn flatten_element(
         for child in &el.children {
             if let DomNode::Element(child_el) = child {
                 if child_el.tag == HtmlTag::Ul || child_el.tag == HtmlTag::Ol {
+                    let child_ctx = layout_ctx
+                        .with_parent(inner_width, Some(available_height), style.font_size)
+                        .with_containing_block(None);
                     flatten_element(
                         child_el,
                         &style,
-                        inner_width,
-                        available_height,
+                        &child_ctx,
                         output,
                         list_ctx,
-                        rules,
                         &child_ancestors,
                         positioned_depth,
                         child_el_idx,
                         child_el_count,
                         &[],
-                        fonts,
-                        None,
-                        counter_state,
+                        env,
                     );
                 } else if recurses_as_layout_child(child_el.tag) {
+                    let child_ctx = layout_ctx
+                        .with_parent(available_width, Some(available_height), style.font_size)
+                        .with_containing_block(None);
                     flatten_element(
                         child_el,
                         &style,
-                        available_width,
-                        available_height,
+                        &child_ctx,
                         output,
                         None,
-                        rules,
                         &child_ancestors,
                         positioned_depth,
                         child_el_idx,
                         child_el_count,
                         &[],
-                        fonts,
-                        None,
-                        counter_state,
+                        env,
                     );
                 }
                 child_el_idx += 1;
@@ -2612,7 +1689,7 @@ fn flatten_element(
     let cls: Vec<&str> = classes.iter().map(|s| s.as_ref()).collect();
     let before_style = compute_pseudo_element_style(
         &style,
-        rules,
+        env.rules,
         el.tag_name(),
         &cls,
         el.id(),
@@ -2622,7 +1699,7 @@ fn flatten_element(
     );
     let after_style = compute_pseudo_element_style(
         &style,
-        rules,
+        env.rules,
         el.tag_name(),
         &cls,
         el.id(),
@@ -2631,20 +1708,51 @@ fn flatten_element(
         PseudoElement::After,
     );
 
+    route_element(
+        el,
+        &mut style,
+        &layout_ctx,
+        output,
+        ancestors,
+        &child_ancestors,
+        positioned_depth,
+        before_style,
+        after_style,
+        env,
+    );
+}
+
+/// Dispatch an element to the appropriate layout function based on its
+/// computed `display` value (flex, grid, block, inline-block, or inline).
+///
+/// Handles page-break-after emission and CSS counter cleanup.
+#[allow(clippy::too_many_arguments)]
+fn route_element(
+    el: &ElementNode,
+    style: &mut ComputedStyle,
+    ctx: &LayoutContext,
+    output: &mut Vec<LayoutElement>,
+    ancestors: &[AncestorInfo],
+    child_ancestors: &[AncestorInfo],
+    positioned_depth: usize,
+    before_style: Option<ComputedStyle>,
+    after_style: Option<ComputedStyle>,
+    env: &mut LayoutEnv,
+) {
+    let layout_ctx = *ctx;
+
     // Flex container handling
     if style.display == Display::Flex {
-        flatten_flex_container(
+        layout_flex_container(
             el,
-            &style,
-            available_width,
+            style,
+            &layout_ctx,
             output,
-            rules,
-            &child_ancestors,
-            fonts,
+            child_ancestors,
             before_style.as_ref(),
             after_style.as_ref(),
             positioned_depth,
-            counter_state,
+            env,
         );
 
         if style.page_break_after {
@@ -2655,15 +1763,7 @@ fn flatten_element(
 
     // Grid container handling
     if style.display == Display::Grid {
-        flatten_grid_container(
-            el,
-            &style,
-            available_width,
-            output,
-            rules,
-            &child_ancestors,
-            fonts,
-        );
+        layout_grid_container(el, style, &layout_ctx, output, child_ancestors, env);
 
         if style.page_break_after {
             output.push(LayoutElement::PageBreak);
@@ -2679,15 +1779,7 @@ fn flatten_element(
             let mut col_style = style.clone();
             col_style.grid_template_columns = tracks;
             col_style.grid_gap = gap;
-            flatten_grid_container(
-                el,
-                &col_style,
-                available_width,
-                output,
-                rules,
-                &child_ancestors,
-                fonts,
-            );
+            layout_grid_container(el, &col_style, &layout_ctx, output, child_ancestors, env);
 
             if style.page_break_after {
                 output.push(LayoutElement::PageBreak);
@@ -2697,1388 +1789,32 @@ fn flatten_element(
     }
 
     if style.display == Display::Block || style.display == Display::InlineBlock {
-        // Compute effective block width considering CSS width/max-width/min-width
-        let mut block_w = available_width;
-        if let Some(w) = style.width {
-            block_w = w.min(available_width);
-        } else if let Some(pct) = style.percentage_sizing.width {
-            block_w = (pct / 100.0 * available_width).min(available_width);
-        }
-        if let Some(mw) = style.max_width {
-            block_w = block_w.min(mw);
-        } else if let Some(pct) = style.percentage_sizing.max_width {
-            block_w = block_w.min(pct / 100.0 * available_width);
-        }
-        if let Some(mw) = style.min_width {
-            block_w = block_w.max(mw);
-        } else if let Some(pct) = style.percentage_sizing.min_width {
-            block_w = block_w.max(pct / 100.0 * available_width);
-        }
-
-        // Compute effective height considering CSS height/min-height/max-height
-        let mut effective_height = style.height;
-        if effective_height.is_none() {
-            if let Some(pct) = style.percentage_sizing.height {
-                // Resolve percentage height against containing block if available
-                if let Some(cb) = abs_containing_block {
-                    effective_height = Some(pct / 100.0 * cb.height);
-                }
-            }
-        }
-        if let Some(min_h) = style.min_height {
-            effective_height = Some(effective_height.map_or(min_h, |h| h.max(min_h)));
-        }
-        if let Some(max_h) = style.max_height {
-            effective_height = effective_height.map(|h| h.min(max_h));
-        }
-
-        // Compute margin auto offset for horizontal centering
-        let has_explicit_width = style.width.is_some()
-            || style.max_width.is_some()
-            || style.min_width.is_some()
-            || style.percentage_sizing.width.is_some();
-        let auto_offset_left = if has_explicit_width && block_w < available_width {
-            if style.margin_left_auto && style.margin_right_auto {
-                (available_width - block_w) / 2.0
-            } else if style.margin_left_auto {
-                available_width - block_w
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
-
-        // Adjust for box-sizing: border-box
-        // When border-box, the specified width includes padding and border,
-        // so the content area is width minus padding and border.
-        let inner_width = if style.box_sizing == BoxSizing::BorderBox {
-            block_w - style.padding.left - style.padding.right - style.border.horizontal_width()
-        } else {
-            block_w - style.padding.left - style.padding.right
-        };
-        let inner_width = inner_width.max(0.0);
-
-        // Resolve percentage border-radius against element dimensions
-        if let Some(pct) = style.border_radius_pct {
-            let dim = if let Some(h) = effective_height {
-                block_w.min(h)
-            } else {
-                block_w
-            };
-            style.border_radius = dim * pct / 100.0;
-        }
-
-        let positioned_container =
-            style.position == Position::Relative || style.position == Position::Absolute;
-        let make_containing_block = |padding_box_height: f32| {
-            if positioned_container {
-                let cb_width = if style.box_sizing == BoxSizing::BorderBox {
-                    block_w - style.border.horizontal_width()
-                } else {
-                    block_w + style.padding.left + style.padding.right
-                };
-                Some(ContainingBlock {
-                    x: style.left.unwrap_or(0.0)
-                        + auto_offset_left
-                        + style.border.left.width
-                        + style.padding.left,
-                    width: cb_width,
-                    height: padding_box_height,
-                    depth: positioned_depth,
-                })
-            } else {
-                None
-            }
-        };
-
-        // Emit block-level ::before pseudo-element.
-        let before_is_abs = before_style
-            .as_ref()
-            .is_some_and(|s| s.position == Position::Absolute);
-        let after_is_abs = after_style
-            .as_ref()
-            .is_some_and(|s| s.position == Position::Absolute);
-        if let Some(ref ps) = before_style {
-            if pseudo_is_block_like(ps) && !before_is_abs {
-                output.push(build_pseudo_block(
-                    ps,
-                    el,
-                    inner_width,
-                    fonts,
-                    None,
-                    positioned_depth,
-                    counter_state,
-                ));
-            }
-        }
-
-        // When the element has absolute pseudo-elements, skip inline text
-        // collection. The wrapper path will handle all children via
-        // flatten_element, avoiding double-rendering of text.
-        let skip_inline_collection = positioned_container && (before_is_abs || after_is_abs);
-
-        // Collect inline content as text runs, splitting at math elements.
-        // When a math span is encountered, flush accumulated text runs as a
-        // TextBlock, emit a MathBlock, then continue collecting.
-        let mut runs = Vec::new();
-        if !skip_inline_collection {
-            append_pseudo_inline_run(&mut runs, before_style.as_ref(), el, fonts, counter_state);
-        }
-
-        // Helper closure: flush accumulated runs as a TextBlock
-        let flush_runs = |runs: &mut Vec<TextRun>,
-                          inner_width: f32,
-                          style: &ComputedStyle,
-                          available_width: f32,
-                          block_w: f32,
-                          effective_height: Option<f32>,
-                          auto_offset_left: f32,
-                          el: &ElementNode,
-                          output: &mut Vec<LayoutElement>,
-                          fonts: &HashMap<String, TtfFont>| {
-            if runs.is_empty() {
-                return;
-            }
-            let wrap_width = if style.white_space == WhiteSpace::NoWrap {
-                f32::MAX
-            } else {
-                inner_width
-            };
-            let lines = wrap_text_runs(
-                std::mem::take(runs),
-                TextWrapOptions::new(
-                    wrap_width,
-                    style.font_size,
-                    resolved_line_height_factor(style, fonts),
-                    style.overflow_wrap,
-                ),
-                fonts,
-            );
-            if lines.is_empty() {
-                return;
-            }
-            // For inline-block without explicit width, shrink-to-fit
-            let render_w = if style.display == Display::InlineBlock
-                && style.width.is_none()
-                && style.percentage_sizing.width.is_none()
-            {
-                let max_line_w: f32 = lines
-                    .iter()
-                    .map(|l| {
-                        l.runs
-                            .iter()
-                            .map(|r| {
-                                crate::fonts::str_width(
-                                    &r.text,
-                                    r.font_size,
-                                    &r.font_family,
-                                    r.bold,
-                                )
-                            })
-                            .sum::<f32>()
-                    })
-                    .fold(0.0f32, f32::max);
-                let shrink_w = max_line_w
-                    + style.padding.left
-                    + style.padding.right
-                    + style.border.horizontal_width();
-                shrink_w.min(block_w)
-            } else {
-                block_w
-            };
-
-            let bg = style
-                .background_color
-                .map(|c: crate::types::Color| c.to_f32_rgba());
-            let explicit_width = if render_w < available_width
-                || style.min_width.is_some()
-                || style.display == Display::InlineBlock
-            {
-                Some(render_w)
-            } else {
-                None
-            };
-            let BackgroundFields {
-                gradient: background_gradient,
-                radial_gradient: background_radial_gradient,
-                svg: background_svg,
-                blur_radius: background_blur_radius,
-                size: background_size,
-                position: background_position,
-                repeat: background_repeat,
-                origin: background_origin,
-            } = BackgroundFields::from_style(style);
-            output.push(LayoutElement::TextBlock {
-                lines,
-                margin_top: style.margin.top,
-                margin_bottom: 0.0,
-                text_align: style.text_align,
-                background_color: bg,
-                padding_top: style.padding.top,
-                padding_bottom: style.padding.bottom,
-                padding_left: style.padding.left,
-                padding_right: style.padding.right,
-                border: LayoutBorder::from_computed(&style.border),
-                block_width: explicit_width,
-                block_height: effective_height,
-                opacity: style.opacity,
-                float: style.float,
-                clear: style.clear,
-                position: style.position,
-                offset_top: style.top.unwrap_or(0.0),
-                offset_left: style.left.unwrap_or(0.0) + auto_offset_left,
-                offset_bottom: style.bottom.unwrap_or(0.0),
-                offset_right: style.right.unwrap_or(0.0),
-                containing_block: None,
-                box_shadow: style.box_shadow,
-                visible: style.visibility == Visibility::Visible,
-                clip_rect: None,
-                transform: style.transform,
-                border_radius: style.border_radius,
-                outline_width: style.outline_width,
-                outline_color: style.outline_color.map(|c| c.to_f32_rgb()),
-                text_indent: style.text_indent,
-                letter_spacing: style.letter_spacing,
-                word_spacing: style.word_spacing,
-                vertical_align: style.vertical_align,
-                background_gradient,
-                background_radial_gradient,
-                background_svg,
-                background_blur_radius,
-                background_size,
-                background_position,
-                background_repeat,
-                background_origin,
-                z_index: style.z_index,
-                repeat_on_each_page: false,
-                positioned_depth,
-                heading_level: heading_level(el.tag),
-                clip_children_count: 0,
-            });
-        };
-
-        // Check if any child is a math element — if so, split at boundaries
-        let has_math_children = el.children.iter().any(|c| {
-            if let DomNode::Element(child) = c {
-                child.attributes.contains_key("data-math")
-            } else {
-                false
-            }
-        });
-
-        // Check if this block has visual properties AND block children.
-        // When true, inline text is collected separately and block children
-        // are processed via the needs_wrapper path for correct nesting.
-        let early_has_visual = has_background_paint(&style)
-            || style.border.has_any()
-            || style.border_radius > 0.0
-            || style.box_shadow.is_some();
-        // Limit nesting depth to prevent stack overflow on deeply nested HTML.
-        // Beyond depth 40, fall back to flat text collection instead of Containers.
-        let nesting_depth = ancestors.len();
-        let has_block_kids_for_wrapper = nesting_depth < 40
-            && early_has_visual
-            && el.children.iter().any(|c| {
-                matches!(c, DomNode::Element(e)
-                    if (e.tag.is_block() || e.tag == HtmlTag::Svg)
-                        && !collects_as_inline_text(e.tag))
-            });
-
-        if has_math_children {
-            // Split mode: interleave TextBlocks and MathBlocks
-            for child in &el.children {
-                match child {
-                    DomNode::Element(child_el) if child_el.attributes.contains_key("data-math") => {
-                        // Flush accumulated text runs before math
-                        flush_runs(
-                            &mut runs,
-                            inner_width,
-                            &style,
-                            available_width,
-                            block_w,
-                            effective_height,
-                            auto_offset_left,
-                            el,
-                            output,
-                            fonts,
-                        );
-                        // Emit math block
-                        let tex = child_el.attributes.get("data-math").unwrap();
-                        let child_classes = child_el.class_list();
-                        let is_display = child_classes.contains(&"math-display");
-                        let ast = crate::parser::math::parse_math(tex);
-                        let math_layout =
-                            crate::layout::math::layout_math(&ast, style.font_size, is_display);
-                        output.push(LayoutElement::MathBlock {
-                            layout: math_layout,
-                            display: is_display,
-                            margin_top: 0.0,
-                            margin_bottom: 0.0,
-                        });
-                    }
-                    _ => {
-                        // Collect text from this child
-                        collect_text_runs(
-                            std::slice::from_ref(child),
-                            &style,
-                            &mut runs,
-                            None,
-                            rules,
-                            fonts,
-                            ancestors,
-                        );
-                    }
-                }
-            }
-            // Flush remaining text runs after math
-            flush_runs(
-                &mut runs,
-                inner_width,
-                &style,
-                available_width,
-                block_w,
-                effective_height,
-                auto_offset_left,
-                el,
-                output,
-                fonts,
-            );
-        } else {
-            // Check if children contain block-level elements that have their own
-            // margins (e.g. <p>, <h1>-<h6>, <ul>, <ol>, <blockquote>).
-            // These need individual layout via flatten_element to preserve
-            // their margins. Generic containers (<div>) are not included to
-            // avoid expensive recursion on deeply nested structures.
-            fn has_own_margins(tag: HtmlTag) -> bool {
-                matches!(
-                    tag,
-                    HtmlTag::P
-                        | HtmlTag::H1
-                        | HtmlTag::H2
-                        | HtmlTag::H3
-                        | HtmlTag::H4
-                        | HtmlTag::H5
-                        | HtmlTag::H6
-                        | HtmlTag::Ul
-                        | HtmlTag::Ol
-                        | HtmlTag::Li
-                        | HtmlTag::Blockquote
-                        | HtmlTag::Pre
-                        | HtmlTag::Hr
-                        | HtmlTag::Dl
-                        | HtmlTag::Dt
-                        | HtmlTag::Dd
-                        | HtmlTag::Figure
-                        | HtmlTag::Table
-                )
-            }
-            let parent_has_visual = has_background_paint(&style)
-                || style.border.has_any()
-                || style.border_radius > 0.0
-                || style.box_shadow.is_some();
-            // Check early if this positioned container has absolute children.
-            // When true, skip the has_block_children fast path so we use the
-            // Container/wrapper path instead, preserving the containing block.
-            let early_has_abs_children = positioned_container
-                && el.children.iter().any(|c| {
-                    if let DomNode::Element(e) = c {
-                        // Quick inline style check
-                        let s = e.style_attr().unwrap_or("");
-                        if s.contains("absolute") {
-                            return true;
-                        }
-                        // Check stylesheet rules
-                        let cls = e.class_list();
-                        let cls_refs: Vec<&str> = cls.iter().map(|s| s.as_ref()).collect();
-                        let cs = compute_style_with_context(
-                            e.tag,
-                            e.style_attr(),
-                            &style,
-                            rules,
-                            e.tag_name(),
-                            &cls_refs,
-                            e.id(),
-                            &e.attributes,
-                            &SelectorContext::default(),
-                        );
-                        cs.position == Position::Absolute
-                    } else {
-                        false
-                    }
-                });
-            let has_abs_pseudo_early = positioned_container && (before_is_abs || after_is_abs);
-            let has_block_children = !parent_has_visual
-                && !early_has_abs_children
-                && !has_abs_pseudo_early
-                && el.children.iter().any(|c| {
-                    matches!(c, DomNode::Element(e)
-                        if (has_own_margins(e.tag)
-                            || (e.tag.is_block() && !collects_as_inline_text(e.tag)))
-                            && !element_is_inline_block(
-                                e, &style, rules, &child_ancestors, 0, 0, &[]))
-                });
-
-            if skip_inline_collection {
-                // All content will be handled by the wrapper path below.
-                // Don't collect inline text — the <p> children will be
-                // processed via flatten_element in the Container wrapper.
-            } else if has_block_children {
-                // For visual containers (border, background), emit a wrapper
-                // TextBlock first, then a pullback spacer so children render
-                // inside the wrapper's padding area.
-                let wrapper_output_idx = output.len();
-                if parent_has_visual {
-                    let bg = style
-                        .background_color
-                        .map(|c: crate::types::Color| c.to_f32_rgba());
-                    let BackgroundFields {
-                        gradient: bg_grad,
-                        radial_gradient: bg_rgrad,
-                        svg: bg_svg,
-                        blur_radius: bg_blur,
-                        size: bg_size,
-                        position: bg_pos,
-                        repeat: bg_repeat,
-                        origin: bg_origin,
-                    } = BackgroundFields::from_style(&style);
-                    // Wrapper height will be patched after children are processed.
-                    let wrapper_h = effective_height.map_or(0.0, |h| {
-                        resolve_padding_box_height(
-                            0.0,
-                            Some(h),
-                            style.padding.top,
-                            style.padding.bottom,
-                            style.border.vertical_width(),
-                            style.box_sizing,
-                        )
-                    });
-                    output.push(LayoutElement::TextBlock {
-                        lines: Vec::new(),
-                        margin_top: style.margin.top,
-                        margin_bottom: 0.0,
-                        text_align: style.text_align,
-                        background_color: bg,
-                        padding_top: 0.0,
-                        padding_bottom: 0.0,
-                        padding_left: style.padding.left,
-                        padding_right: style.padding.right,
-                        border: LayoutBorder::from_computed(&style.border),
-                        block_width: Some(block_w),
-                        block_height: effective_height.map(|_| wrapper_h),
-                        opacity: style.opacity,
-                        float: style.float,
-                        clear: style.clear,
-                        position: style.position,
-                        offset_top: style.top.unwrap_or(0.0),
-                        offset_left: style.left.unwrap_or(0.0) + auto_offset_left,
-                        offset_bottom: style.bottom.unwrap_or(0.0),
-                        offset_right: style.right.unwrap_or(0.0),
-                        containing_block: None,
-                        clip_children_count: 0,
-                        box_shadow: style.box_shadow,
-                        visible: style.visibility == Visibility::Visible,
-                        clip_rect: if style.overflow == Overflow::Hidden {
-                            Some((0.0, 0.0, block_w, wrapper_h))
-                        } else {
-                            None
-                        },
-                        transform: style.transform,
-                        border_radius: style.border_radius,
-                        outline_width: style.outline_width,
-                        outline_color: style.outline_color.map(|c| c.to_f32_rgb()),
-                        text_indent: 0.0,
-                        letter_spacing: 0.0,
-                        word_spacing: 0.0,
-                        vertical_align: VerticalAlign::Baseline,
-                        background_gradient: bg_grad,
-                        background_radial_gradient: bg_rgrad,
-                        background_svg: bg_svg,
-                        background_blur_radius: bg_blur,
-                        background_size: bg_size,
-                        background_position: bg_pos,
-                        background_repeat: bg_repeat,
-                        background_origin: bg_origin,
-                        z_index: style.z_index,
-                        repeat_on_each_page: false,
-                        positioned_depth,
-                        heading_level: None,
-                    });
-                    // Pullback spacer
-                    let pullback = if effective_height.is_some() && wrapper_h > 0.0 {
-                        wrapper_h - style.padding.top
-                    } else {
-                        0.0
-                    };
-                    if pullback > 0.0 {
-                        output.push(LayoutElement::TextBlock {
-                            lines: Vec::new(),
-                            margin_top: -pullback,
-                            margin_bottom: 0.0,
-                            text_align: TextAlign::Left,
-                            background_color: None,
-                            padding_top: 0.0,
-                            padding_bottom: 0.0,
-                            padding_left: style.padding.left,
-                            padding_right: style.padding.right,
-                            border: LayoutBorder::default(),
-                            block_width: None,
-                            block_height: None,
-                            opacity: 1.0,
-                            float: Float::None,
-                            clear: Clear::None,
-                            position: Position::Static,
-                            offset_top: 0.0,
-                            offset_left: 0.0,
-                            offset_bottom: 0.0,
-                            offset_right: 0.0,
-                            containing_block: None,
-                            clip_children_count: 0,
-                            box_shadow: None,
-                            visible: true,
-                            clip_rect: None,
-                            transform: None,
-                            border_radius: 0.0,
-                            outline_width: 0.0,
-                            outline_color: None,
-                            text_indent: 0.0,
-                            letter_spacing: 0.0,
-                            word_spacing: 0.0,
-                            vertical_align: VerticalAlign::Baseline,
-                            background_gradient: None,
-                            background_radial_gradient: None,
-                            background_svg: None,
-                            background_blur_radius: 0.0,
-                            background_size: BackgroundSize::Auto,
-                            background_position: BackgroundPosition::default(),
-                            background_repeat: BackgroundRepeat::Repeat,
-                            background_origin: BackgroundOrigin::Padding,
-                            z_index: 0,
-                            repeat_on_each_page: false,
-                            positioned_depth: 0,
-                            heading_level: None,
-                        });
-                    }
-                }
-
-                // Mixed inline + block children: split at block boundaries.
-                let mut block_child_buf: Vec<LayoutElement> = Vec::new();
-                let target: &mut Vec<LayoutElement> = if parent_has_visual {
-                    &mut block_child_buf
-                } else {
-                    output
-                };
-                for child in &el.children {
-                    match child {
-                        DomNode::Text(_) => {
-                            collect_text_runs(
-                                std::slice::from_ref(child),
-                                &style,
-                                &mut runs,
-                                None,
-                                rules,
-                                fonts,
-                                ancestors,
-                            );
-                        }
-                        DomNode::Element(child_el)
-                            if (child_el.tag.is_block() || child_el.tag == HtmlTag::Svg)
-                                && !collects_as_inline_text(child_el.tag) =>
-                        {
-                            // Flush inline runs before block child
-                            flush_runs(
-                                &mut runs,
-                                inner_width,
-                                &style,
-                                available_width,
-                                block_w,
-                                effective_height,
-                                auto_offset_left,
-                                el,
-                                target,
-                                fonts,
-                            );
-                            // Recurse into block child
-                            let n_children = el
-                                .children
-                                .iter()
-                                .filter(|c| matches!(c, DomNode::Element(_)))
-                                .count();
-                            flatten_element(
-                                child_el,
-                                &style,
-                                inner_width,
-                                available_height,
-                                target,
-                                None,
-                                rules,
-                                &child_ancestors,
-                                positioned_depth,
-                                0,
-                                n_children,
-                                &[],
-                                fonts,
-                                None,
-                                counter_state,
-                            );
-                        }
-                        DomNode::Element(_) => {
-                            // Inline element: collect as text runs
-                            collect_text_runs(
-                                std::slice::from_ref(child),
-                                &style,
-                                &mut runs,
-                                None,
-                                rules,
-                                fonts,
-                                ancestors,
-                            );
-                        }
-                    }
-                }
-                // Flush remaining inline runs after the last block child
-                flush_runs(
-                    &mut runs,
-                    inner_width,
-                    &style,
-                    available_width,
-                    block_w,
-                    effective_height,
-                    auto_offset_left,
-                    el,
-                    target,
-                    fonts,
-                );
-                // For visual containers, propagate parent padding to children
-                // so they render inside the padded area.
-                if parent_has_visual {
-                    if style.padding.left > 0.0 || style.padding.right > 0.0 {
-                        for elem in &mut block_child_buf {
-                            if let LayoutElement::TextBlock {
-                                padding_left,
-                                padding_right,
-                                ..
-                            } = elem
-                            {
-                                *padding_left += style.padding.left;
-                                *padding_right += style.padding.right;
-                            }
-                        }
-                    }
-                    output.extend(block_child_buf);
-
-                    // Patch wrapper block_height to cover all children
-                    if effective_height.is_none() {
-                        let children_total_h: f32 = output[wrapper_output_idx + 1..]
-                            .iter()
-                            .map(estimate_element_height)
-                            .sum();
-                        let patched_h = style.padding.top
-                            + children_total_h
-                            + style.padding.bottom
-                            + style.border.vertical_width();
-                        if let Some(LayoutElement::TextBlock { block_height, .. }) =
-                            output.get_mut(wrapper_output_idx)
-                        {
-                            *block_height = Some(patched_h);
-                        }
-                    }
-                }
-                // Add bottom spacer for visual containers
-                if parent_has_visual {
-                    let bottom_space =
-                        style.padding.bottom + style.border.vertical_width() + style.margin.bottom;
-                    if bottom_space > 0.0 {
-                        output.push(LayoutElement::TextBlock {
-                            lines: Vec::new(),
-                            margin_top: bottom_space,
-                            margin_bottom: 0.0,
-                            text_align: TextAlign::Left,
-                            background_color: None,
-                            padding_top: 0.0,
-                            padding_bottom: 0.0,
-                            padding_left: 0.0,
-                            padding_right: 0.0,
-                            border: LayoutBorder::default(),
-                            block_width: None,
-                            block_height: None,
-                            opacity: 1.0,
-                            float: Float::None,
-                            clear: Clear::None,
-                            position: Position::Static,
-                            offset_top: 0.0,
-                            offset_left: 0.0,
-                            offset_bottom: 0.0,
-                            offset_right: 0.0,
-                            containing_block: None,
-                            clip_children_count: 0,
-                            box_shadow: None,
-                            visible: true,
-                            clip_rect: None,
-                            transform: None,
-                            border_radius: 0.0,
-                            outline_width: 0.0,
-                            outline_color: None,
-                            text_indent: 0.0,
-                            letter_spacing: 0.0,
-                            word_spacing: 0.0,
-                            vertical_align: VerticalAlign::Baseline,
-                            background_gradient: None,
-                            background_radial_gradient: None,
-                            background_svg: None,
-                            background_blur_radius: 0.0,
-                            background_size: BackgroundSize::Auto,
-                            background_position: BackgroundPosition::default(),
-                            background_repeat: BackgroundRepeat::Repeat,
-                            background_origin: BackgroundOrigin::Padding,
-                            z_index: 0,
-                            repeat_on_each_page: false,
-                            positioned_depth: 0,
-                            heading_level: None,
-                        });
-                    }
-                }
-                // Emit absolute-positioned ::before / ::after pseudo-elements
-                if positioned_container && (before_is_abs || after_is_abs) {
-                    // Compute containing block from children height
-                    let children_h: f32 = output[wrapper_output_idx..]
-                        .iter()
-                        .map(estimate_element_height)
-                        .sum();
-                    let pseudo_cb = Some(ContainingBlock {
-                        x: 0.0,
-                        width: block_w,
-                        height: children_h,
-                        depth: positioned_depth,
-                    });
-                    if before_is_abs {
-                        push_block_pseudo(
-                            output,
-                            before_style.as_ref(),
-                            el,
-                            inner_width,
-                            fonts,
-                            pseudo_cb,
-                            positioned_depth,
-                            counter_state,
-                        );
-                    }
-                    if after_is_abs {
-                        push_block_pseudo(
-                            output,
-                            after_style.as_ref(),
-                            el,
-                            inner_width,
-                            fonts,
-                            pseudo_cb,
-                            positioned_depth,
-                            counter_state,
-                        );
-                    }
-                }
-
-                if style.page_break_after {
-                    output.push(LayoutElement::PageBreak);
-                }
-                return;
-            } else if has_block_kids_for_wrapper {
-                // Only collect inline children's text — block children will
-                // be handled by the needs_wrapper path via flatten_element.
-                for child in &el.children {
-                    match child {
-                        DomNode::Text(_) => {
-                            collect_text_runs(
-                                std::slice::from_ref(child),
-                                &style,
-                                &mut runs,
-                                None,
-                                rules,
-                                fonts,
-                                ancestors,
-                            );
-                        }
-                        DomNode::Element(child_el) if collects_as_inline_text(child_el.tag) => {
-                            collect_text_runs(
-                                std::slice::from_ref(child),
-                                &style,
-                                &mut runs,
-                                None,
-                                rules,
-                                fonts,
-                                ancestors,
-                            );
-                        }
-                        _ => {} // Block children handled by needs_wrapper
-                    }
-                }
-            } else {
-                collect_text_runs(
-                    &el.children,
-                    &style,
-                    &mut runs,
-                    None,
-                    rules,
-                    fonts,
-                    ancestors,
-                );
-            }
-        }
-        if !skip_inline_collection {
-            append_pseudo_inline_run(&mut runs, after_style.as_ref(), el, fonts, counter_state);
-        }
-
-        let had_inline_runs = runs.iter().any(|r| !r.text.trim().is_empty()) || has_math_children;
-        let mut cb_info = None;
-
-        // has_block_kids_for_wrapper is computed earlier (before has_math_children).
-        let mut saved_inline_element: Option<LayoutElement> = None;
-
-        if !runs.is_empty() {
-            // When white-space: nowrap, prevent wrapping by using a huge width
-            let wrap_width = if style.white_space == WhiteSpace::NoWrap {
-                f32::MAX
-            } else {
-                inner_width
-            };
-            let mut lines = wrap_text_runs(
-                runs,
-                TextWrapOptions::new(
-                    wrap_width,
-                    style.font_size,
-                    resolved_line_height_factor(&style, fonts),
-                    style.overflow_wrap,
-                ),
-                fonts,
-            );
-
-            // Apply text-overflow: ellipsis when overflow is hidden, white-space
-            // is nowrap, and we have a fixed width.
-            if style.text_overflow == TextOverflow::Ellipsis
-                && style.overflow == Overflow::Hidden
-                && style.white_space == WhiteSpace::NoWrap
-                && style.width.is_some()
-            {
-                apply_text_overflow_ellipsis(&mut lines, inner_width, fonts);
-            }
-
-            let bg = style
-                .background_color
-                .map(|c: crate::types::Color| c.to_f32_rgba());
-
-            let explicit_width = if block_w < available_width || style.min_width.is_some() {
-                Some(block_w)
-            } else {
-                None
-            };
-
-            // Compute clip rect before moving lines
-            let clip_rect = if style.overflow == Overflow::Hidden {
-                let text_height: f32 = lines.iter().map(|l| l.height).sum();
-                let total_h = resolve_padding_box_height(
-                    text_height,
-                    effective_height,
-                    style.padding.top,
-                    style.padding.bottom,
-                    style.border.vertical_width(),
-                    style.box_sizing,
-                );
-                Some((0.0, 0.0, block_w, total_h))
-            } else {
-                None
-            };
-            let BackgroundFields {
-                gradient: background_gradient,
-                radial_gradient: background_radial_gradient,
-                svg: background_svg,
-                blur_radius: background_blur_radius,
-                size: background_size,
-                position: background_position,
-                repeat: background_repeat,
-                origin: background_origin,
-            } = BackgroundFields::from_style(&style);
-            let text_height: f32 = lines.iter().map(|l| l.height).sum();
-            let total_h = resolve_padding_box_height(
-                text_height,
-                effective_height,
-                style.padding.top,
-                style.padding.bottom,
-                style.border.vertical_width(),
-                style.box_sizing,
-            );
-            cb_info = make_containing_block(total_h);
-
-            // Resolve containing block and offsets for absolute elements
-            let (elem_cb, resolved_top, resolved_left) = resolve_abs_containing_block(
-                &style,
-                abs_containing_block,
-                total_h,
-                explicit_width.unwrap_or(block_w),
-            );
-
-            // When this block has visual properties AND block children,
-            // save the inline text for inclusion inside the wrapper instead
-            // of emitting it directly.  The wrapper path will use it.
-            let inline_tb = LayoutElement::TextBlock {
-                lines,
-                margin_top: if has_block_kids_for_wrapper {
-                    0.0
-                } else {
-                    style.margin.top
-                },
-                margin_bottom: if has_block_kids_for_wrapper {
-                    0.0
-                } else {
-                    style.margin.bottom
-                },
-                text_align: style.text_align,
-                background_color: if has_block_kids_for_wrapper { None } else { bg },
-                padding_top: if has_block_kids_for_wrapper {
-                    0.0
-                } else {
-                    style.padding.top
-                },
-                padding_bottom: style.padding.bottom,
-                padding_left: style.padding.left,
-                padding_right: style.padding.right,
-                border: LayoutBorder::from_computed(&style.border),
-                block_width: explicit_width,
-                block_height: effective_height.map(|_| total_h),
-                opacity: style.opacity,
-                float: style.float,
-                clear: style.clear,
-                position: style.position,
-                offset_top: resolved_top,
-                offset_left: resolved_left + auto_offset_left,
-                offset_bottom: style.bottom.unwrap_or(0.0),
-                offset_right: style.right.unwrap_or(0.0),
-                containing_block: elem_cb,
-                box_shadow: style.box_shadow,
-                visible: style.visibility == Visibility::Visible,
-                clip_rect,
-                transform: style.transform,
-                border_radius: style.border_radius,
-                outline_width: style.outline_width,
-                outline_color: style.outline_color.map(|c| c.to_f32_rgb()),
-                text_indent: style.text_indent,
-                letter_spacing: style.letter_spacing,
-                word_spacing: style.word_spacing,
-                vertical_align: style.vertical_align,
-                background_gradient,
-                background_radial_gradient,
-                background_svg,
-                background_blur_radius,
-                background_size,
-                background_position,
-                background_repeat,
-                background_origin,
-                z_index: style.z_index,
-                repeat_on_each_page: false,
-                positioned_depth,
-                heading_level: heading_level(el.tag),
-                clip_children_count: 0,
-            };
-            // Compute needs_wrapper early so we know whether to push the
-            // TextBlock or save it for the Container wrapper path.
-            let early_has_visual_for_wrapper = has_background_paint(&style)
-                || style.border.has_any()
-                || style.border_radius > 0.0
-                || style.box_shadow.is_some();
-            let early_needs_wrapper = early_has_visual_for_wrapper
-                || style.aspect_ratio.is_some()
-                || style.height.is_some()
-                || (positioned_container && (before_is_abs || after_is_abs))
-                || skip_inline_collection;
-            let early_no_inline = !had_inline_runs;
-
-            if has_block_kids_for_wrapper {
-                saved_inline_element = Some(inline_tb);
-            } else if early_no_inline && early_needs_wrapper {
-                // Don't push empty TextBlock — the wrapper path will
-                // create a Container with the correct block_width.
-                saved_inline_element = Some(inline_tb);
-            } else {
-                output.push(inline_tb);
-            }
-            push_block_pseudo(
-                output,
-                before_style.as_ref(),
-                el,
-                inner_width,
-                fonts,
-                cb_info,
-                positioned_depth,
-                counter_state,
-            );
-        }
-
-        // Also process block children recursively, using inner_width
-        // so children respect the parent's padding boundaries.
-        let child_el_count = el
-            .children
-            .iter()
-            .filter(|c| matches!(c, DomNode::Element(_)))
-            .count();
-
-        // If no inline content but the element has visual properties (background,
-        // gradient, border, border-radius), emit a wrapper TextBlock so the visuals
-        // are rendered.  Children are then pulled back inside via a negative-margin
-        // spacer (same technique as flex column containers).
-        // NB: check before runs is moved into wrap_text_runs above.
-        let has_visual = has_background_paint(&style)
-            || style.border.has_any()
-            || style.border_radius > 0.0
-            || style.box_shadow.is_some();
-        // A positioned container (position: relative/absolute) needs the
-        // Container element to establish a containing block for absolute children.
-        let has_abs_children = positioned_container
-            && el.children.iter().any(|c| {
-                if let DomNode::Element(e) = c {
-                    let cls = e.class_list();
-                    let cls_refs: Vec<&str> = cls.iter().map(|s| s.as_ref()).collect();
-                    let child_style = compute_style_with_context(
-                        e.tag,
-                        e.style_attr(),
-                        &style,
-                        rules,
-                        e.tag_name(),
-                        &cls_refs,
-                        e.id(),
-                        &e.attributes,
-                        &SelectorContext::default(),
-                    );
-                    child_style.position == Position::Absolute
-                } else {
-                    false
-                }
-            });
-        let needs_wrapper = has_visual
-            || style.aspect_ratio.is_some()
-            || style.height.is_some()
-            || (positioned_container && (before_is_abs || after_is_abs))
-            || has_abs_children;
-        let no_inline_content = !had_inline_runs;
-
-        let has_abs_pseudo = positioned_container && (before_is_abs || after_is_abs);
-        if (no_inline_content || has_block_kids_for_wrapper || has_abs_pseudo)
-            && needs_wrapper
-            && nesting_depth < 40
-        {
-            // Pre-flatten children to measure total height.
-            // If there's saved inline content, include it as the first child.
-            let mut child_elements: Vec<LayoutElement> = Vec::new();
-            if let Some(inline_el) = saved_inline_element.take() {
-                child_elements.push(inline_el);
-            }
-            let mut child_el_idx = 0;
-            let mut ib_group_wrapper: Vec<&ElementNode> = Vec::new();
-            for child in &el.children {
-                if let DomNode::Element(child_el) = child {
-                    if recurses_as_layout_child(child_el.tag)
-                        && element_is_inline_block(
-                            child_el,
-                            &style,
-                            rules,
-                            &child_ancestors,
-                            child_el_idx,
-                            child_el_count,
-                            &[],
-                        )
-                    {
-                        ib_group_wrapper.push(child_el);
-                    } else {
-                        // Flush any pending inline-block group
-                        if !ib_group_wrapper.is_empty() {
-                            #[allow(clippy::drain_collect)]
-                            let taken: Vec<&ElementNode> = ib_group_wrapper.drain(..).collect();
-                            flush_inline_block_group(
-                                &taken,
-                                &style,
-                                inner_width,
-                                available_height,
-                                &mut child_elements,
-                                rules,
-                                &child_ancestors,
-                                positioned_depth,
-                                fonts,
-                                counter_state,
-                            );
-                        }
-                        if recurses_as_layout_child(child_el.tag) {
-                            flatten_element(
-                                child_el,
-                                &style,
-                                inner_width,
-                                available_height,
-                                &mut child_elements,
-                                None,
-                                rules,
-                                &child_ancestors,
-                                positioned_depth,
-                                child_el_idx,
-                                child_el_count,
-                                &[],
-                                fonts,
-                                // Pass containing block for percentage height resolution
-                                // when parent has an explicit height.
-                                if effective_height.is_some() {
-                                    Some(ContainingBlock {
-                                        x: 0.0,
-                                        width: inner_width,
-                                        height: effective_height.unwrap_or(0.0),
-                                        depth: positioned_depth,
-                                    })
-                                } else {
-                                    None
-                                },
-                                counter_state,
-                            );
-                        }
-                    }
-                    child_el_idx += 1;
-                }
-            }
-            // Flush remaining inline-block group
-            if !ib_group_wrapper.is_empty() {
-                #[allow(clippy::drain_collect)]
-                let taken: Vec<&ElementNode> = ib_group_wrapper.drain(..).collect();
-                flush_inline_block_group(
-                    &taken,
-                    &style,
-                    inner_width,
-                    available_height,
-                    &mut child_elements,
-                    rules,
-                    &child_ancestors,
-                    positioned_depth,
-                    fonts,
-                    counter_state,
-                );
-            }
-            // Measure children total height
-            let children_h: f32 = child_elements.iter().map(estimate_element_height).sum();
-            let mut container_h = resolve_padding_box_height(
-                children_h,
-                effective_height,
-                style.padding.top,
-                style.padding.bottom,
-                style.border.vertical_width(),
-                style.box_sizing,
-            );
-            if effective_height.is_none()
-                && let Some(aspect_h) = aspect_ratio_height(block_w, &style)
-            {
-                container_h = container_h.max(aspect_h);
-            }
-            cb_info = make_containing_block(container_h);
-
-            // Add absolute-positioned ::before pseudo-element as a Container child.
-            if let Some(ref ps) = before_style {
-                if pseudo_is_block_like(ps) && ps.position == Position::Absolute {
-                    child_elements.push(build_pseudo_block(
-                        ps,
-                        el,
-                        inner_width,
-                        fonts,
-                        cb_info,
-                        positioned_depth,
-                        counter_state,
-                    ));
-                }
-            }
-            // Add absolute-positioned ::after pseudo-element as a Container child.
-            if let Some(ref ps) = after_style {
-                if pseudo_is_block_like(ps) && ps.position == Position::Absolute {
-                    child_elements.push(build_pseudo_block(
-                        ps,
-                        el,
-                        inner_width,
-                        fonts,
-                        cb_info,
-                        positioned_depth,
-                        counter_state,
-                    ));
-                }
-            }
-
-            // Patch absolute children with the now-known containing block,
-            // and resolve bottom/right offsets into top/left.
-            if let Some(cb) = cb_info {
-                patch_absolute_children_containing_block(&mut child_elements, cb);
-            }
-
-            let bg = style
-                .background_color
-                .map(|c: crate::types::Color| c.to_f32_rgba());
-            let BackgroundFields {
-                gradient: background_gradient,
-                radial_gradient: background_radial_gradient,
-                svg: background_svg,
-                blur_radius: background_blur_radius,
-                size: background_size,
-                position: background_position,
-                repeat: background_repeat,
-                origin: background_origin,
-            } = BackgroundFields::from_style(&style);
-            // Resolve containing block and offsets for absolute elements
-            let (_wrapper_cb, wrapper_top, wrapper_left) =
-                resolve_abs_containing_block(&style, abs_containing_block, container_h, block_w);
-            // Emit a Container element with true parent-child nesting.
-            // The renderer draws background/border, then renders children inside.
-            output.push(LayoutElement::Container {
-                children: child_elements,
-                background_color: bg,
-                border: LayoutBorder::from_computed(&style.border),
-                border_radius: style.border_radius,
-                padding_top: style.padding.top,
-                padding_bottom: style.padding.bottom,
-                padding_left: style.padding.left,
-                padding_right: style.padding.right,
-                margin_top: style.margin.top,
-                margin_bottom: style.margin.bottom,
-                block_width: Some(block_w),
-                block_height: if effective_height.is_some() || style.aspect_ratio.is_some() {
-                    Some(container_h)
-                } else {
-                    None
-                },
-                opacity: style.opacity,
-                position: style.position,
-                offset_top: wrapper_top,
-                offset_left: wrapper_left + auto_offset_left,
-                overflow: style.overflow,
-                transform: style.transform,
-                box_shadow: style.box_shadow,
-                background_gradient,
-                background_radial_gradient,
-                background_svg,
-                background_blur_radius,
-                background_size,
-                background_position,
-                background_repeat,
-                background_origin,
-                z_index: style.z_index,
-            });
-        } else {
-            if no_inline_content {
-                push_block_pseudo(
-                    output,
-                    before_style.as_ref(),
-                    el,
-                    inner_width,
-                    fonts,
-                    cb_info,
-                    positioned_depth,
-                    counter_state,
-                );
-            }
-            // Compute cb_info for positioned containers in the non-wrapper path
-            // so that absolute children get a containing block.
-            if cb_info.is_none() && positioned_container {
-                let h = effective_height.unwrap_or(0.0);
-                cb_info = make_containing_block(h);
-            }
-            let mut child_el_idx = 0;
-            let mut ib_group: Vec<&ElementNode> = Vec::new();
-            for child in &el.children {
-                if let DomNode::Element(child_el) = child {
-                    if recurses_as_layout_child(child_el.tag)
-                        && element_is_inline_block(
-                            child_el,
-                            &style,
-                            rules,
-                            &child_ancestors,
-                            child_el_idx,
-                            child_el_count,
-                            &[],
-                        )
-                    {
-                        ib_group.push(child_el);
-                    } else {
-                        // Flush any pending inline-block group
-                        if !ib_group.is_empty() {
-                            #[allow(clippy::drain_collect)]
-                            let taken: Vec<&ElementNode> = ib_group.drain(..).collect();
-                            flush_inline_block_group(
-                                &taken,
-                                &style,
-                                inner_width,
-                                available_height,
-                                output,
-                                rules,
-                                &child_ancestors,
-                                positioned_depth,
-                                fonts,
-                                counter_state,
-                            );
-                        }
-                        if recurses_as_layout_child(child_el.tag) {
-                            flatten_element(
-                                child_el,
-                                &style,
-                                inner_width,
-                                available_height,
-                                output,
-                                None,
-                                rules,
-                                &child_ancestors,
-                                positioned_depth,
-                                child_el_idx,
-                                child_el_count,
-                                &[],
-                                fonts,
-                                cb_info,
-                                counter_state,
-                            );
-                        }
-                    }
-                    child_el_idx += 1;
-                }
-            }
-            // Flush remaining inline-block group
-            if !ib_group.is_empty() {
-                #[allow(clippy::drain_collect)]
-                let taken: Vec<&ElementNode> = ib_group.drain(..).collect();
-                flush_inline_block_group(
-                    &taken,
-                    &style,
-                    inner_width,
-                    available_height,
-                    output,
-                    rules,
-                    &child_ancestors,
-                    positioned_depth,
-                    fonts,
-                    counter_state,
-                );
-            }
-        }
-
-        // Emit block-level ::after pseudo-element (inside block path)
-        push_block_pseudo(
-            output,
-            after_style.as_ref(),
+        let early_exit = layout_block_element(
             el,
-            inner_width,
-            fonts,
-            cb_info,
+            style,
+            &layout_ctx,
+            output,
+            ancestors,
+            child_ancestors,
             positioned_depth,
-            counter_state,
+            before_style,
+            after_style,
+            env,
         );
+        if early_exit {
+            return;
+        }
     } else {
         // Inline element — process children with this style context
         flatten_nodes(
             &el.children,
-            &style,
-            available_width,
-            available_height,
+            style,
+            &layout_ctx,
             output,
             None,
-            rules,
-            &child_ancestors,
+            child_ancestors,
             positioned_depth,
-            fonts,
-            None,
-            counter_state,
+            env,
         );
     }
 
@@ -4087,5011 +1823,23 @@ fn flatten_element(
     }
 
     // Pop any counters that were pushed by counter-reset on this element.
-    counter_state.pop_resets(&style.counter_reset);
+    env.counter_state.pop_resets(&style.counter_reset);
 }
 
-/// Lay out children of a `display: flex` container.
-///
-/// Each child is laid out as a TextBlock at a computed position. The container
-/// emits one TextBlock per flex item with an `offset_left` / `offset_top` that
-/// encodes its position inside the flex row/column. The container itself emits
-/// a wrapper TextBlock for its background/border first, then the items.
-#[allow(clippy::too_many_arguments)]
-fn flatten_flex_container(
-    el: &ElementNode,
-    style: &ComputedStyle,
-    available_width: f32,
-    output: &mut Vec<LayoutElement>,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    fonts: &HashMap<String, TtfFont>,
-    before_style: Option<&ComputedStyle>,
-    after_style: Option<&ComputedStyle>,
-    positioned_depth: usize,
-    counter_state: &mut CounterState,
-) {
-    let mut block_w = available_width;
-    if let Some(w) = style.width {
-        block_w = w.min(available_width);
-    }
-    if let Some(mw) = style.max_width {
-        block_w = block_w.min(mw);
-    }
+// Grid layout functions have been moved to `super::grid`.
 
-    let inner_width = block_w - style.padding.left - style.padding.right;
+// Table layout functions have been moved to `super::table`.
 
-    // Resolve percentage border-radius for flex containers
-    let resolved_border_radius = if let Some(pct) = style.border_radius_pct {
-        let dim = style.height.map_or(block_w, |h| block_w.min(h));
-        dim * pct / 100.0
-    } else {
-        style.border_radius
-    };
-
-    // Collect child elements and lay each one out into a temporary buffer
-    let child_elements: Vec<&ElementNode> = el
-        .children
-        .iter()
-        .filter_map(|c| {
-            if let DomNode::Element(e) = c {
-                Some(e)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let child_count = child_elements.len();
-    if child_count == 0 {
-        let before_abs = before_style.is_some_and(|pseudo| {
-            pseudo_is_block_like(pseudo) && pseudo.position == Position::Absolute
-        });
-        let after_abs = after_style.is_some_and(|pseudo| {
-            pseudo_is_block_like(pseudo) && pseudo.position == Position::Absolute
-        });
-        if has_background_paint(style)
-            || style.border.has_any()
-            || resolved_border_radius > 0.0
-            || style.box_shadow.is_some()
-            || style.aspect_ratio.is_some()
-            || style.height.is_some()
-            || before_abs
-            || after_abs
-        {
-            let container_h = style
-                .height
-                .or_else(|| aspect_ratio_height(block_w, style))
-                .unwrap_or(0.0);
-            let containing_block = (style.position == Position::Relative
-                || style.position == Position::Absolute)
-                .then(|| ContainingBlock {
-                    x: style.left.unwrap_or(0.0) + style.border.left.width + style.padding.left,
-                    width: if style.box_sizing == BoxSizing::BorderBox {
-                        block_w - style.border.horizontal_width()
-                    } else {
-                        block_w + style.padding.left + style.padding.right
-                    },
-                    height: container_h,
-                    depth: positioned_depth,
-                });
-            let bg = style
-                .background_color
-                .map(|color: crate::types::Color| color.to_f32_rgba());
-            let BackgroundFields {
-                gradient: background_gradient,
-                radial_gradient: background_radial_gradient,
-                svg: background_svg,
-                blur_radius: background_blur_radius,
-                size: background_size,
-                position: background_position,
-                repeat: background_repeat,
-                origin: background_origin,
-            } = BackgroundFields::from_style(style);
-            output.push(LayoutElement::TextBlock {
-                lines: Vec::new(),
-                margin_top: style.margin.top,
-                margin_bottom: style.margin.bottom,
-                text_align: style.text_align,
-                background_color: bg,
-                padding_top: style.padding.top,
-                padding_bottom: style.padding.bottom,
-                padding_left: style.padding.left,
-                padding_right: style.padding.right,
-                border: LayoutBorder::from_computed(&style.border),
-                block_width: Some(block_w),
-                block_height: Some(container_h),
-                opacity: style.opacity,
-                float: style.float,
-                clear: style.clear,
-                position: style.position,
-                offset_top: style.top.unwrap_or(0.0),
-                offset_left: style.left.unwrap_or(0.0),
-                offset_bottom: 0.0,
-                offset_right: 0.0,
-                containing_block: None,
-                box_shadow: style.box_shadow,
-                visible: style.visibility == Visibility::Visible,
-                clip_rect: if style.overflow == Overflow::Hidden {
-                    Some((0.0, 0.0, block_w, container_h))
-                } else {
-                    None
-                },
-                transform: style.transform,
-                border_radius: resolved_border_radius,
-                outline_width: style.outline_width,
-                outline_color: style.outline_color.map(|c| c.to_f32_rgb()),
-                text_indent: 0.0,
-                letter_spacing: style.letter_spacing,
-                word_spacing: style.word_spacing,
-                vertical_align: style.vertical_align,
-                background_gradient,
-                background_radial_gradient,
-                background_svg,
-                background_blur_radius,
-                background_size,
-                background_position,
-                background_repeat,
-                background_origin,
-                z_index: style.z_index,
-                repeat_on_each_page: false,
-                positioned_depth,
-                heading_level: None,
-                clip_children_count: 0,
-            });
-
-            if before_abs {
-                push_block_pseudo(
-                    output,
-                    before_style,
-                    el,
-                    inner_width.max(0.0),
-                    fonts,
-                    containing_block,
-                    positioned_depth,
-                    counter_state,
-                );
-            }
-            if after_abs {
-                push_block_pseudo(
-                    output,
-                    after_style,
-                    el,
-                    inner_width.max(0.0),
-                    fonts,
-                    containing_block,
-                    positioned_depth,
-                    counter_state,
-                );
-            }
-        }
-        return;
-    }
-
-    // Lay out each child into its own set of elements to measure sizes
-    struct FlexItem {
-        elements: Vec<LayoutElement>,
-        width: f32,
-        base_width: f32,
-        flex_grow: f32,
-        flex_shrink: f32,
-        height: f32,
-    }
-
-    let mut items: Vec<FlexItem> = Vec::new();
-
-    // For percentage width resolution, children need the actual container width
-    // as the parent reference (not the CSS width which may be None).
-    // Subtract total gap space so that percentage widths + gaps fit within the container.
-    let total_gaps = style.gap * (child_count.saturating_sub(1)) as f32;
-    let width_for_percentages = (inner_width - total_gaps).max(0.0);
-    let mut parent_for_children = style.clone();
-    if parent_for_children.width.is_none() {
-        parent_for_children.width = Some(width_for_percentages);
-    }
-
-    for (idx, child_el) in child_elements.iter().enumerate() {
-        let classes = child_el.class_list();
-        let selector_ctx = SelectorContext {
-            ancestors: ancestors.to_vec(),
-            child_index: idx,
-            sibling_count: child_count,
-            preceding_siblings: Vec::new(),
-        };
-        let child_style = compute_style_with_context(
-            child_el.tag,
-            child_el.style_attr(),
-            &parent_for_children,
-            rules,
-            child_el.tag_name(),
-            &classes,
-            child_el.id(),
-            &child_el.attributes,
-            &selector_ctx,
-        );
-
-        if child_style.display == Display::None {
-            continue;
-        }
-
-        // Determine child width: flex-basis takes priority, then explicit width.
-        // Flex base size for grow/shrink distribution:
-        // - With flex-basis or width: use that value
-        // - flex-grow > 0 without basis/width: use 0 so all space is distributed
-        //   proportionally by grow factors
-        // - flex-grow == 0 without basis/width: use equal share, then shrink to
-        //   natural content width (for justify-content)
-        let has_explicit_width = child_style.flex_basis.is_some() || child_style.width.is_some();
-        let child_w_initial = child_style
-            .flex_basis
-            .or(child_style.width)
-            .unwrap_or_else(|| {
-                if child_style.flex_grow > 0.0 {
-                    0.0
-                } else {
-                    width_for_percentages / child_count as f32
-                }
-            });
-        // For text wrapping, use equal share as measurement width even when
-        // flex base is 0 — text needs a nonzero width to wrap into lines.
-        // The actual item width will be set after grow distribution.
-        let wrap_width = if child_w_initial < 1.0 && child_style.flex_grow > 0.0 {
-            width_for_percentages / child_count as f32
-        } else {
-            child_w_initial
-        };
-
-        // Include the child element itself in the ancestor chain so that
-        // descendant selectors like `.card h3` can match.
-        let mut child_ancestors = ancestors.to_vec();
-        child_ancestors.push(AncestorInfo {
-            element: child_el,
-            child_index: idx,
-            sibling_count: child_count,
-            preceding_siblings: Vec::new(),
-        });
-
-        // Two widths: child_w_for_flex is the CSS flex-basis for wrapping
-        // decisions, child_w_for_layout is the width used to lay out children
-        // (inflated for flex-grow items so percentage children resolve correctly).
-        let child_w_for_flex = child_style
-            .flex_basis
-            .or(child_style.width)
-            .unwrap_or(width_for_percentages / child_count as f32);
-        let child_w_for_layout = if child_style.flex_grow > 0.0
-            && child_style.flex_basis == Some(0.0)
-            && child_style.width.is_none()
-        {
-            // Use full available width for child percentage resolution,
-            // but flex wrapping uses the actual basis (child_w_for_flex).
-            width_for_percentages
-        } else {
-            child_w_for_flex
-        };
-
-        // Check if this flex item has block-level children that need full layout
-        let item_has_block_children = child_el.children.iter().any(|c| {
-            matches!(c, DomNode::Element(e) if e.tag.is_block() && !collects_as_inline_text(e.tag))
-        });
-
-        // For complex flex items (with block children like <h2>, <p>, <div>),
-        // use flatten_element to get a proper list of layout elements with
-        // margins and structure preserved.
-        if item_has_block_children {
-            let mut child_elements_buf = Vec::new();
-            let layout_height = 10000.0; // large enough to not constrain
-            flatten_element(
-                child_el,
-                style,
-                child_w_for_layout,
-                layout_height,
-                &mut child_elements_buf,
-                None,
-                rules,
-                &child_ancestors,
-                positioned_depth,
-                idx,
-                child_count,
-                &[],
-                fonts,
-                None,
-                counter_state,
-            );
-            let child_h = child_elements_buf
-                .iter()
-                .map(|el| match el {
-                    LayoutElement::TextBlock {
-                        lines,
-                        padding_top,
-                        padding_bottom,
-                        border,
-                        block_height,
-                        ..
-                    } => {
-                        let text_h: f32 = lines.iter().map(|l| l.height).sum();
-                        let content =
-                            padding_top + text_h + padding_bottom + border.vertical_width();
-                        // Don't include margins here — they are added as spacer
-                        // lines in the merged FlexCell, so counting them would
-                        // double the vertical space.
-                        block_height.map_or(content, |h| content.max(h))
-                    }
-                    LayoutElement::FlexRow {
-                        cells,
-                        margin_top,
-                        margin_bottom,
-                        ..
-                    } => {
-                        let row_h = cells
-                            .iter()
-                            .map(|c| {
-                                let text_h: f32 = c.lines.iter().map(|l| l.height).sum();
-                                c.padding_top + text_h + c.padding_bottom
-                            })
-                            .fold(0.0f32, f32::max);
-                        margin_top + row_h + margin_bottom
-                    }
-                    other => estimate_element_height(other),
-                })
-                .sum::<f32>();
-
-            items.push(FlexItem {
-                elements: child_elements_buf,
-                width: child_w_for_flex,
-                base_width: child_w_for_flex,
-                flex_grow: child_style.flex_grow,
-                flex_shrink: child_style.flex_shrink,
-                height: child_h,
-            });
-            continue;
-        }
-
-        // Simple flex items: collect text runs and wrap
-        let mut runs = Vec::new();
-        FlexTextRunCollector {
-            runs: &mut runs,
-            rules,
-            fonts,
-        }
-        .collect(
-            &child_el.children,
-            &child_style,
-            None,
-            (0.0, 0.0),
-            &child_ancestors,
-        );
-
-        // When no explicit width/flex-basis and flex-grow is 0, measure the
-        // natural (intrinsic) content width so the item shrinks to fit.
-        let child_w = if !has_explicit_width && child_style.flex_grow == 0.0 && !runs.is_empty() {
-            let natural_text_w = measure_runs_width(&runs, fonts);
-            let pad_h = child_style.padding.left + child_style.padding.right;
-            let border_h = if child_style.box_sizing == BoxSizing::BorderBox {
-                child_style.border.horizontal_width()
-            } else {
-                0.0
-            };
-            // Content width = text width + padding + border (capped at container)
-            (natural_text_w + pad_h + border_h).min(width_for_percentages)
-        } else {
-            child_w_initial
-        };
-
-        // Use wrap_width for text measurement (nonzero even when flex base is 0)
-        let wrap_w = if child_style.flex_grow > 0.0 && !has_explicit_width {
-            wrap_width
-        } else {
-            child_w
-        };
-        let child_inner_w = if child_style.box_sizing == BoxSizing::BorderBox {
-            wrap_w
-                - child_style.padding.left
-                - child_style.padding.right
-                - child_style.border.horizontal_width()
-        } else {
-            wrap_w - child_style.padding.left - child_style.padding.right
-        }
-        .max(0.0);
-
-        let lines = if !runs.is_empty() {
-            wrap_text_runs(
-                runs,
-                TextWrapOptions::new(
-                    child_inner_w.max(1.0),
-                    child_style.font_size,
-                    resolved_line_height_factor(&child_style, fonts),
-                    child_style.overflow_wrap,
-                ),
-                fonts,
-            )
-        } else {
-            Vec::new()
-        };
-
-        let text_height: f32 = lines.iter().map(|l| l.height).sum();
-        let aspect_h = child_style
-            .height
-            .is_none()
-            .then(|| aspect_ratio_height(child_w, &child_style))
-            .flatten();
-        let mut child_h = resolve_padding_box_height(
-            text_height,
-            child_style.height,
-            child_style.padding.top,
-            child_style.padding.bottom,
-            child_style.border.vertical_width(),
-            child_style.box_sizing,
-        );
-        if let Some(aspect_h) = aspect_h {
-            child_h = child_h.max(aspect_h);
-        }
-
-        let bg = child_style
-            .background_color
-            .map(|c: crate::types::Color| c.to_f32_rgba());
-        let BackgroundFields {
-            gradient: background_gradient,
-            radial_gradient: background_radial_gradient,
-            svg: background_svg,
-            blur_radius: background_blur_radius,
-            size: background_size,
-            position: background_position,
-            repeat: background_repeat,
-            origin: background_origin,
-        } = BackgroundFields::from_style(&child_style);
-        let elem = LayoutElement::TextBlock {
-            lines,
-            margin_top: child_style.margin.top,
-            margin_bottom: child_style.margin.bottom,
-            text_align: child_style.text_align,
-            background_color: bg,
-            padding_top: child_style.padding.top,
-            padding_bottom: child_style.padding.bottom,
-            padding_left: child_style.padding.left,
-            padding_right: child_style.padding.right,
-            border: LayoutBorder::from_computed(&child_style.border),
-            block_width: Some(child_w),
-            block_height: child_style
-                .height
-                .map(|_| child_h)
-                .or(aspect_h.map(|_| child_h)),
-            opacity: child_style.opacity,
-            float: Float::None,
-            clear: Clear::None,
-            position: child_style.position,
-            offset_top: 0.0,
-            offset_left: 0.0,
-            offset_bottom: 0.0,
-            offset_right: 0.0,
-            containing_block: None,
-            box_shadow: child_style.box_shadow,
-            visible: child_style.visibility == Visibility::Visible,
-            clip_rect: if child_style.overflow == Overflow::Hidden {
-                Some((0.0, 0.0, child_w, child_h))
-            } else {
-                None
-            },
-            transform: child_style.transform,
-            border_radius: child_style.border_radius,
-            outline_width: child_style.outline_width,
-            outline_color: child_style.outline_color.map(|c| c.to_f32_rgb()),
-            text_indent: child_style.text_indent,
-            letter_spacing: child_style.letter_spacing,
-            word_spacing: child_style.word_spacing,
-            vertical_align: child_style.vertical_align,
-            background_gradient,
-            background_radial_gradient,
-            background_svg,
-            background_blur_radius,
-            background_size,
-            background_position,
-            background_repeat,
-            background_origin,
-            z_index: child_style.z_index,
-            repeat_on_each_page: false,
-            positioned_depth: 0,
-            heading_level: None,
-            clip_children_count: 0,
-        };
-
-        items.push(FlexItem {
-            elements: vec![elem],
-            width: child_w,
-            base_width: child_w,
-            flex_grow: child_style.flex_grow,
-            flex_shrink: child_style.flex_shrink,
-            height: child_h + child_style.margin.top + child_style.margin.bottom,
-        });
-    }
-
-    if items.is_empty() {
-        return;
-    }
-
-    let direction = style.flex_direction;
-    let justify = style.justify_content;
-    let align = style.align_items;
-    let wrap = style.flex_wrap;
-    let gap = style.gap;
-
-    // Group items into lines (for flex-wrap)
-    struct FlexLine {
-        item_indices: Vec<usize>,
-        main_size: f32,
-        cross_size: f32,
-    }
-
-    let mut lines: Vec<FlexLine> = Vec::new();
-
-    match direction {
-        FlexDirection::Row => {
-            let max_main = inner_width;
-            let mut current_line = FlexLine {
-                item_indices: Vec::new(),
-                main_size: 0.0,
-                cross_size: 0.0,
-            };
-
-            for (i, item) in items.iter().enumerate() {
-                let item_main = item.width;
-                let gap_extra = if current_line.item_indices.is_empty() {
-                    0.0
-                } else {
-                    gap
-                };
-
-                if wrap == FlexWrap::Wrap
-                    && !current_line.item_indices.is_empty()
-                    && current_line.main_size + gap_extra + item_main > max_main
-                {
-                    lines.push(current_line);
-                    current_line = FlexLine {
-                        item_indices: Vec::new(),
-                        main_size: 0.0,
-                        cross_size: 0.0,
-                    };
-                }
-
-                if !current_line.item_indices.is_empty() {
-                    current_line.main_size += gap;
-                }
-                current_line.main_size += item_main;
-                current_line.cross_size = current_line.cross_size.max(item.height);
-                current_line.item_indices.push(i);
-            }
-            if !current_line.item_indices.is_empty() {
-                lines.push(current_line);
-            }
-        }
-        FlexDirection::Column => {
-            // In column direction, each item is on its own "line" conceptually,
-            // but we group them all into one line for simplicity (no column wrap needed yet)
-            let mut line = FlexLine {
-                item_indices: Vec::new(),
-                main_size: 0.0,
-                cross_size: 0.0,
-            };
-            for (i, item) in items.iter().enumerate() {
-                if !line.item_indices.is_empty() {
-                    line.main_size += gap;
-                }
-                line.main_size += item.height;
-                line.cross_size = line.cross_size.max(item.width);
-                line.item_indices.push(i);
-            }
-            if !line.item_indices.is_empty() {
-                lines.push(line);
-            }
-        }
-    }
-
-    // Compute container dimensions
-    let total_cross: f32 = match direction {
-        FlexDirection::Row => {
-            lines.iter().map(|l| l.cross_size).sum::<f32>()
-                + if lines.len() > 1 {
-                    (lines.len() - 1) as f32 * gap
-                } else {
-                    0.0
-                }
-        }
-        FlexDirection::Column => lines.iter().map(|l| l.cross_size).fold(0.0f32, f32::max),
-    };
-
-    let total_main: f32 = match direction {
-        FlexDirection::Row => inner_width,
-        FlexDirection::Column => lines.iter().map(|l| l.main_size).sum::<f32>(),
-    };
-
-    let container_height = match direction {
-        FlexDirection::Row => total_cross,
-        FlexDirection::Column => total_main,
-    };
-
-    let container_h = style.padding.top + container_height + style.padding.bottom;
-    let container_h = match style.height {
-        Some(h) => container_h.max(h),
-        None => container_h,
-    };
-    let bg = style
-        .background_color
-        .map(|color: crate::types::Color| color.to_f32_rgba());
-
-    // For column direction, emit container background separately
-    let emitted_column_bg = direction == FlexDirection::Column
-        && (has_background_paint(style) || style.border.has_any() || style.box_shadow.is_some());
-    if emitted_column_bg {
-        // Emit the container background/border as a visual element.
-        // It advances y by its full height in paginate.  We then emit a
-        // negative-margin spacer to pull y back so children flow *inside*
-        // the background rather than after it.
-        let bg_flow_height = container_h + style.border.vertical_width();
-        let BackgroundFields {
-            gradient: background_gradient,
-            radial_gradient: background_radial_gradient,
-            svg: background_svg,
-            blur_radius: background_blur_radius,
-            size: background_size,
-            position: background_position,
-            repeat: background_repeat,
-            origin: background_origin,
-        } = BackgroundFields::from_style(style);
-        output.push(LayoutElement::TextBlock {
-            lines: Vec::new(),
-            margin_top: style.margin.top,
-            margin_bottom: 0.0,
-            text_align: style.text_align,
-            background_color: bg,
-            padding_top: style.padding.top,
-            padding_bottom: style.padding.bottom,
-            padding_left: style.padding.left,
-            padding_right: style.padding.right,
-            border: LayoutBorder::from_computed(&style.border),
-            block_width: Some(block_w),
-            block_height: Some(container_h),
-            opacity: style.opacity,
-            float: style.float,
-            clear: style.clear,
-            position: style.position,
-            offset_top: style.top.unwrap_or(0.0),
-            offset_left: style.left.unwrap_or(0.0),
-            offset_bottom: 0.0,
-            offset_right: 0.0,
-            containing_block: None,
-            box_shadow: style.box_shadow,
-            visible: style.visibility == Visibility::Visible,
-            clip_rect: if style.overflow == Overflow::Hidden {
-                Some((0.0, 0.0, block_w, container_h))
-            } else {
-                None
-            },
-            transform: style.transform,
-            border_radius: style.border_radius,
-            outline_width: style.outline_width,
-            outline_color: style.outline_color.map(|c| c.to_f32_rgb()),
-            text_indent: 0.0,
-            letter_spacing: 0.0,
-            word_spacing: 0.0,
-            vertical_align: VerticalAlign::Baseline,
-            background_gradient,
-            background_radial_gradient,
-            background_svg,
-            background_blur_radius,
-            background_size,
-            background_position,
-            background_repeat,
-            background_origin,
-            z_index: 0,
-            repeat_on_each_page: false,
-            positioned_depth: 0,
-            heading_level: None,
-            clip_children_count: 0,
-        });
-        // Pull y back so children flow inside the container background
-        let BackgroundFields {
-            gradient: background_gradient,
-            radial_gradient: background_radial_gradient,
-            svg: background_svg,
-            blur_radius: background_blur_radius,
-            size: background_size,
-            position: background_position,
-            repeat: background_repeat,
-            origin: background_origin,
-        } = BackgroundFields::none();
-        output.push(LayoutElement::TextBlock {
-            lines: Vec::new(),
-            margin_top: -bg_flow_height,
-            margin_bottom: 0.0,
-            text_align: TextAlign::Left,
-            background_color: None,
-            padding_top: 0.0,
-            padding_bottom: 0.0,
-            padding_left: 0.0,
-            padding_right: 0.0,
-            border: LayoutBorder::default(),
-            block_width: None,
-            block_height: None,
-            opacity: 1.0,
-            float: Float::None,
-            clear: Clear::None,
-            position: Position::Static,
-            offset_top: 0.0,
-            offset_left: 0.0,
-            offset_bottom: 0.0,
-            offset_right: 0.0,
-            containing_block: None,
-            box_shadow: None,
-            visible: true,
-            clip_rect: None,
-            transform: None,
-            border_radius: 0.0,
-            outline_width: 0.0,
-            outline_color: None,
-            text_indent: 0.0,
-            letter_spacing: 0.0,
-            word_spacing: 0.0,
-            vertical_align: VerticalAlign::Baseline,
-            background_gradient,
-            background_radial_gradient,
-            background_svg,
-            background_blur_radius,
-            background_size,
-            background_position,
-            background_repeat,
-            background_origin,
-            z_index: 0,
-            repeat_on_each_page: false,
-            positioned_depth: 0,
-            heading_level: None,
-            clip_children_count: 0,
-        });
-    }
-
-    // Position items within the flex container and emit them
-    let mut cross_offset = 0.0;
-
-    for line in &lines {
-        let line_items: Vec<usize> = line.item_indices.clone();
-        let line_item_count = line_items.len();
-
-        match direction {
-            FlexDirection::Row => {
-                let total_item_width: f32 = line_items.iter().map(|&i| items[i].width).sum();
-                let total_gap = if line_item_count > 1 {
-                    (line_item_count - 1) as f32 * gap
-                } else {
-                    0.0
-                };
-                let mut free_space = inner_width - total_item_width - total_gap;
-
-                // Flex grow: distribute positive free space proportionally
-                let total_grow: f32 = line_items.iter().map(|&i| items[i].flex_grow).sum();
-                if free_space > 0.0 && total_grow > 0.0 {
-                    for &i in &line_items {
-                        items[i].width += free_space * (items[i].flex_grow / total_grow);
-                    }
-                    free_space = 0.0;
-                }
-
-                // Flex shrink: shrink items when overflowing
-                if free_space < 0.0 {
-                    let total_shrink_weighted: f32 = line_items
-                        .iter()
-                        .map(|&i| items[i].flex_shrink * items[i].base_width)
-                        .sum();
-                    if total_shrink_weighted > 0.0 {
-                        let deficit = -free_space;
-                        for &i in &line_items {
-                            let shrink_ratio =
-                                items[i].flex_shrink * items[i].base_width / total_shrink_weighted;
-                            items[i].width = (items[i].width - deficit * shrink_ratio).max(0.0);
-                        }
-                    }
-                    free_space = 0.0;
-                }
-
-                // Second pass: re-layout flex-grow items whose width changed
-                // significantly. This ensures percentage-width children inside
-                // flex items resolve against the final cell width, not the
-                // initial estimate.
-                for &i in &line_items {
-                    if items[i].flex_grow > 0.0
-                        && (items[i].width - items[i].base_width).abs() > 1.0
-                    {
-                        let final_w = items[i].width;
-                        let child_el = child_elements[i];
-                        let has_block_kids = child_el.children.iter().any(|c| {
-                            matches!(c, DomNode::Element(e) if e.tag.is_block() && !collects_as_inline_text(e.tag))
-                        });
-                        if has_block_kids {
-                            let mut relayout_buf = Vec::new();
-                            let mut relayout_ancestors = ancestors.to_vec();
-                            relayout_ancestors.push(AncestorInfo {
-                                element: el,
-                                child_index: 0,
-                                sibling_count: 0,
-                                preceding_siblings: Vec::new(),
-                            });
-                            flatten_element(
-                                child_el,
-                                style,
-                                final_w,
-                                10000.0,
-                                &mut relayout_buf,
-                                None,
-                                rules,
-                                &relayout_ancestors,
-                                positioned_depth,
-                                i,
-                                child_count,
-                                &[],
-                                fonts,
-                                None,
-                                counter_state,
-                            );
-                            if !relayout_buf.is_empty() {
-                                items[i].elements = relayout_buf;
-                                items[i].height =
-                                    items[i].elements.iter().map(estimate_element_height).sum();
-                            }
-                        }
-                    }
-                }
-
-                let free_space = free_space.max(0.0);
-
-                // Calculate starting x and spacing based on justify-content
-                let (mut x, extra_gap) = match justify {
-                    JustifyContent::FlexStart => (0.0, 0.0),
-                    JustifyContent::FlexEnd => (free_space, 0.0),
-                    JustifyContent::Center => (free_space / 2.0, 0.0),
-                    JustifyContent::SpaceBetween => {
-                        if line_item_count > 1 {
-                            (0.0, free_space / (line_item_count - 1) as f32)
-                        } else {
-                            (0.0, 0.0)
-                        }
-                    }
-                    JustifyContent::SpaceAround => {
-                        let around = free_space / line_item_count as f32;
-                        (around / 2.0, around)
-                    }
-                };
-
-                // Build FlexCells for this row line.
-                let mut flex_cells = Vec::new();
-                for &item_idx in &line_items {
-                    let item = &items[item_idx];
-
-                    // Complex items (multiple elements): merge all lines
-                    // into a single FlexCell, inserting margin spacing
-                    if item.elements.len() > 1 {
-                        let mut merged_lines = Vec::new();
-                        let mut first_bg = None;
-                        let mut first_pt = 0.0f32;
-                        let mut first_pb = 0.0f32;
-                        let mut first_pl = 0.0f32;
-                        let mut first_pr = 0.0f32;
-                        let mut first_br = 0.0f32;
-                        let mut is_first = true;
-                        // Check if all elements are TextBlocks (mergeable)
-                        let all_text_blocks = item
-                            .elements
-                            .iter()
-                            .all(|e| matches!(e, LayoutElement::TextBlock { .. }));
-
-                        if !all_text_blocks {
-                            // Mixed elements (e.g. TextBlock + TableRow):
-                            // store in nested_elements for the renderer to handle
-                            flex_cells.push(FlexCell {
-                                lines: Vec::new(),
-                                x_offset: x,
-                                width: item.width,
-                                text_align: TextAlign::Left,
-                                background_color: None,
-                                padding_top: 0.0,
-                                padding_right: 0.0,
-                                padding_bottom: 0.0,
-                                padding_left: 0.0,
-                                border: LayoutBorder::default(),
-                                border_radius: 0.0,
-                                background_gradient: None,
-                                background_radial_gradient: None,
-                                background_svg: None,
-                                background_blur_radius: 0.0,
-                                background_size: BackgroundSize::Auto,
-                                background_position: BackgroundPosition::default(),
-                                background_repeat: BackgroundRepeat::Repeat,
-                                background_origin: BackgroundOrigin::Padding,
-                                transform: None,
-                                nested_elements: item.elements.clone(),
-                            });
-                            x += item.width + gap;
-                            continue;
-                        }
-
-                        for elem in &item.elements {
-                            if let LayoutElement::TextBlock {
-                                lines: tb_lines,
-                                margin_top,
-                                background_color: tb_bg,
-                                padding_top: tb_pt,
-                                padding_bottom: tb_pb,
-                                padding_left: tb_pl,
-                                padding_right: tb_pr,
-                                border_radius: tb_br,
-                                ..
-                            } = elem
-                            {
-                                if is_first {
-                                    first_bg = *tb_bg;
-                                    first_pt = *tb_pt;
-                                    first_pb = *tb_pb;
-                                    first_pl = *tb_pl;
-                                    first_pr = *tb_pr;
-                                    first_br = *tb_br;
-                                    is_first = false;
-                                }
-                                // Add margin spacing between sub-elements
-                                if !merged_lines.is_empty() && *margin_top > 0.0 {
-                                    merged_lines.push(TextLine {
-                                        runs: Vec::new(),
-                                        height: *margin_top,
-                                    });
-                                }
-                                merged_lines.extend(tb_lines.iter().cloned());
-                            }
-                        }
-                        flex_cells.push(FlexCell {
-                            lines: merged_lines,
-                            x_offset: x,
-                            width: item.width,
-                            text_align: TextAlign::Left,
-                            background_color: first_bg,
-                            padding_top: first_pt,
-                            padding_right: first_pr,
-                            padding_bottom: first_pb,
-                            padding_left: first_pl,
-                            border: LayoutBorder::default(),
-                            border_radius: first_br,
-                            background_gradient: None,
-                            background_radial_gradient: None,
-                            background_svg: None,
-                            background_blur_radius: 0.0,
-                            background_size: BackgroundSize::Auto,
-                            background_position: BackgroundPosition::default(),
-                            background_repeat: BackgroundRepeat::Repeat,
-                            background_origin: BackgroundOrigin::Padding,
-                            transform: None,
-                            nested_elements: Vec::new(),
-                        });
-                        x += item.width + gap;
-                        continue;
-                    }
-
-                    // Simple items: extract into FlexCell
-                    if let Some(LayoutElement::TextBlock {
-                        lines: tb_lines,
-                        text_align: tb_ta,
-                        background_color: tb_bg,
-                        padding_top: tb_pt,
-                        padding_bottom: tb_pb,
-                        padding_left: tb_pl,
-                        padding_right: tb_pr,
-                        border_radius: tb_br,
-                        background_gradient: tb_grad,
-                        background_radial_gradient: tb_rgrad,
-                        background_svg: tb_bg_svg,
-                        background_blur_radius: tb_bg_blur,
-                        background_size: tb_bg_size,
-                        background_position: tb_bg_pos,
-                        background_repeat: tb_bg_repeat,
-                        background_origin: tb_bg_origin,
-                        ..
-                    }) = item.elements.first()
-                    {
-                        flex_cells.push(FlexCell {
-                            lines: tb_lines.clone(),
-                            x_offset: x,
-                            width: item.width,
-                            text_align: *tb_ta,
-                            background_color: *tb_bg,
-                            padding_top: *tb_pt,
-                            padding_right: *tb_pr,
-                            padding_bottom: *tb_pb,
-                            padding_left: *tb_pl,
-                            border: LayoutBorder::default(),
-                            border_radius: *tb_br,
-                            background_gradient: tb_grad.clone(),
-                            background_radial_gradient: tb_rgrad.clone(),
-                            background_svg: tb_bg_svg.clone(),
-                            background_blur_radius: *tb_bg_blur,
-                            background_size: *tb_bg_size,
-                            background_position: *tb_bg_pos,
-                            background_repeat: *tb_bg_repeat,
-                            background_origin: *tb_bg_origin,
-                            transform: None,
-                            nested_elements: Vec::new(),
-                        });
-                    } else {
-                        // Single non-TextBlock element (e.g. Container): store
-                        // in nested_elements for the renderer to handle.
-                        flex_cells.push(FlexCell {
-                            lines: Vec::new(),
-                            x_offset: x,
-                            width: item.width,
-                            text_align: TextAlign::Left,
-                            background_color: None,
-                            padding_top: 0.0,
-                            padding_right: 0.0,
-                            padding_bottom: 0.0,
-                            padding_left: 0.0,
-                            border: LayoutBorder::default(),
-                            border_radius: 0.0,
-                            background_gradient: None,
-                            background_radial_gradient: None,
-                            background_svg: None,
-                            background_blur_radius: 0.0,
-                            background_size: BackgroundSize::Auto,
-                            background_position: BackgroundPosition::default(),
-                            background_repeat: BackgroundRepeat::Repeat,
-                            background_origin: BackgroundOrigin::Padding,
-                            transform: None,
-                            nested_elements: item.elements.clone(),
-                        });
-                    }
-
-                    x += item.width + gap + extra_gap;
-                }
-
-                output.push(LayoutElement::FlexRow {
-                    cells: flex_cells,
-                    row_height: line.cross_size,
-                    margin_top: style.margin.top + cross_offset,
-                    margin_bottom: 0.0,
-                    background_color: if cross_offset == 0.0 { bg } else { None },
-                    container_width: block_w,
-                    padding_top: style.padding.top,
-                    padding_bottom: style.padding.bottom,
-                    padding_left: style.padding.left,
-                    padding_right: style.padding.right,
-                    border: if cross_offset == 0.0 {
-                        LayoutBorder::from_computed(&style.border)
-                    } else {
-                        LayoutBorder::default()
-                    },
-                    border_radius: style.border_radius,
-                    box_shadow: if cross_offset == 0.0 {
-                        style.box_shadow
-                    } else {
-                        None
-                    },
-                    background_gradient: if cross_offset == 0.0 {
-                        style.background_gradient.clone()
-                    } else {
-                        None
-                    },
-                    background_radial_gradient: if cross_offset == 0.0 {
-                        style.background_radial_gradient.clone()
-                    } else {
-                        None
-                    },
-                    background_svg: if cross_offset == 0.0 {
-                        background_svg_for_style(style)
-                    } else {
-                        None
-                    },
-                    background_blur_radius: if cross_offset == 0.0 {
-                        style.blur_radius
-                    } else {
-                        0.0
-                    },
-                    background_size: if cross_offset == 0.0 {
-                        style.background_size
-                    } else {
-                        BackgroundSize::Auto
-                    },
-                    background_position: if cross_offset == 0.0 {
-                        style.background_position
-                    } else {
-                        BackgroundPosition::default()
-                    },
-                    background_repeat: if cross_offset == 0.0 {
-                        style.background_repeat
-                    } else {
-                        BackgroundRepeat::Repeat
-                    },
-                    background_origin: if cross_offset == 0.0 {
-                        style.background_origin
-                    } else {
-                        BackgroundOrigin::Padding
-                    },
-                });
-            }
-            FlexDirection::Column => {
-                let _total_item_height: f32 = line_items.iter().map(|&i| items[i].height).sum();
-                let _total_gap = if line_item_count > 1 {
-                    (line_item_count - 1) as f32 * gap
-                } else {
-                    0.0
-                };
-                let free_space = 0.0f32; // column doesn't constrain main axis to container width
-                let _ = free_space;
-
-                let mut y = 0.0;
-
-                for &item_idx in &line_items {
-                    let item = &items[item_idx];
-
-                    // Calculate cross-axis (horizontal) alignment
-                    let x_offset = match align {
-                        AlignItems::FlexStart => 0.0,
-                        AlignItems::FlexEnd => inner_width - item.width,
-                        AlignItems::Center => (inner_width - item.width) / 2.0,
-                        AlignItems::Stretch => 0.0,
-                    };
-
-                    let effective_width = if align == AlignItems::Stretch {
-                        Some(inner_width)
-                    } else {
-                        Some(item.width)
-                    };
-
-                    for elem in &item.elements {
-                        if let LayoutElement::TextBlock {
-                            lines: tb_lines,
-                            margin_top: tb_mt,
-                            margin_bottom: tb_mb,
-                            text_align: tb_ta,
-                            background_color: tb_bg,
-                            padding_top: tb_pt,
-                            padding_bottom: tb_pb,
-                            padding_left: tb_pl,
-                            padding_right: tb_pr,
-                            border: tb_border,
-                            block_height: tb_bh,
-                            opacity: tb_op,
-                            position: tb_pos,
-                            box_shadow: tb_bs,
-                            visible: tb_vis,
-                            clip_rect: tb_clip,
-                            transform: tb_transform,
-                            border_radius: tb_br,
-                            outline_width: tb_ow,
-                            outline_color: tb_oc,
-                            text_indent: tb_ti,
-                            letter_spacing: tb_ls,
-                            word_spacing: tb_ws,
-                            vertical_align: tb_va,
-                            background_gradient: tb_grad,
-                            background_radial_gradient: tb_rgrad,
-                            background_svg: tb_bg_svg,
-                            background_blur_radius: tb_bg_blur,
-                            background_size: tb_bg_size,
-                            background_position: tb_bg_pos,
-                            background_repeat: tb_bg_repeat,
-                            background_origin: tb_bg_origin,
-                            ..
-                        } = elem
-                        {
-                            output.push(LayoutElement::TextBlock {
-                                lines: tb_lines.clone(),
-                                margin_top: if y == 0.0 && !emitted_column_bg {
-                                    style.margin.top + style.padding.top + *tb_mt
-                                } else if y == 0.0 {
-                                    // Background element already accounts for margin;
-                                    // add only the container padding offset.
-                                    style.padding.top + *tb_mt
-                                } else {
-                                    // Apply gap between column-direction flex items.
-                                    gap + *tb_mt
-                                },
-                                margin_bottom: *tb_mb,
-                                text_align: *tb_ta,
-                                background_color: *tb_bg,
-                                padding_top: *tb_pt,
-                                padding_bottom: *tb_pb,
-                                padding_left: *tb_pl,
-                                padding_right: *tb_pr,
-                                border: *tb_border,
-                                block_width: effective_width,
-                                block_height: *tb_bh,
-                                opacity: *tb_op,
-                                float: Float::None,
-                                clear: Clear::None,
-                                position: if x_offset > 0.0 || style.padding.left > 0.0 {
-                                    Position::Relative
-                                } else {
-                                    *tb_pos
-                                },
-                                offset_top: 0.0,
-                                offset_left: x_offset + style.padding.left,
-                                offset_bottom: 0.0,
-                                offset_right: 0.0,
-                                containing_block: None,
-                                box_shadow: *tb_bs,
-                                visible: *tb_vis,
-                                clip_rect: *tb_clip,
-                                transform: *tb_transform,
-                                border_radius: *tb_br,
-                                outline_width: *tb_ow,
-                                outline_color: *tb_oc,
-                                text_indent: *tb_ti,
-                                letter_spacing: *tb_ls,
-                                word_spacing: *tb_ws,
-                                vertical_align: *tb_va,
-                                background_gradient: tb_grad.clone(),
-                                background_radial_gradient: tb_rgrad.clone(),
-                                background_svg: tb_bg_svg.clone(),
-                                background_blur_radius: *tb_bg_blur,
-                                background_size: *tb_bg_size,
-                                background_position: *tb_bg_pos,
-                                background_repeat: *tb_bg_repeat,
-                                background_origin: *tb_bg_origin,
-                                z_index: 0,
-                                repeat_on_each_page: false,
-                                positioned_depth: 0,
-                                heading_level: None,
-                                clip_children_count: 0,
-                            });
-                        }
-                    }
-
-                    y += item.height + gap;
-                }
-            }
-        }
-
-        cross_offset += line.cross_size + gap;
-    }
-
-    // Emit trailing margin (include bottom padding when bg spacer shifted y back)
-    let trailing = if emitted_column_bg {
-        style.padding.bottom + style.margin.bottom
-    } else {
-        style.margin.bottom
-    };
-    if trailing > 0.0 {
-        output.push(LayoutElement::TextBlock {
-            lines: Vec::new(),
-            margin_top: trailing,
-            margin_bottom: 0.0,
-            text_align: TextAlign::Left,
-            background_color: None,
-            padding_top: 0.0,
-            padding_bottom: 0.0,
-            padding_left: 0.0,
-            padding_right: 0.0,
-            border: LayoutBorder::default(),
-            block_width: None,
-            block_height: None,
-            opacity: 1.0,
-            float: Float::None,
-            clear: Clear::None,
-            position: Position::Static,
-            offset_top: 0.0,
-            offset_left: 0.0,
-            offset_bottom: 0.0,
-            offset_right: 0.0,
-            containing_block: None,
-            box_shadow: None,
-            visible: true,
-            clip_rect: None,
-            transform: None,
-            border_radius: 0.0,
-            outline_width: 0.0,
-            outline_color: None,
-            text_indent: 0.0,
-            letter_spacing: 0.0,
-            word_spacing: 0.0,
-            vertical_align: VerticalAlign::Baseline,
-            background_gradient: None,
-            background_radial_gradient: None,
-            background_svg: None,
-            background_blur_radius: 0.0,
-            background_size: BackgroundSize::Auto,
-            background_position: BackgroundPosition::default(),
-            background_repeat: BackgroundRepeat::Repeat,
-            background_origin: BackgroundOrigin::Padding,
-            z_index: 0,
-            repeat_on_each_page: false,
-            positioned_depth: 0,
-            heading_level: None,
-            clip_children_count: 0,
-        });
-    }
-}
-
-/// Resolve grid column widths from track definitions.
-fn resolve_grid_columns(tracks: &[GridTrack], available_width: f32, gap: f32) -> Vec<f32> {
-    if tracks.is_empty() {
-        return vec![available_width];
-    }
-
-    let num_gaps = if tracks.len() > 1 {
-        (tracks.len() - 1) as f32 * gap
-    } else {
-        0.0
-    };
-    let space = available_width - num_gaps;
-
-    // First pass: consume fixed-width columns
-    let mut fixed_total: f32 = 0.0;
-    let mut fr_total: f32 = 0.0;
-    let mut auto_count: usize = 0;
-    let mut minmax_count: usize = 0;
-
-    for track in tracks {
-        match track {
-            GridTrack::Fixed(v) => fixed_total += *v,
-            GridTrack::Fr(v) => fr_total += *v,
-            GridTrack::Auto => auto_count += 1,
-            GridTrack::Minmax(min, _) => {
-                fixed_total += min;
-                minmax_count += 1;
-            }
-        }
-    }
-
-    let remaining = (space - fixed_total).max(0.0);
-
-    // Auto columns are treated like 1fr each for distribution purposes
-    let effective_fr_total = fr_total + auto_count as f32 + minmax_count as f32;
-    let per_fr = if effective_fr_total > 0.0 {
-        remaining / effective_fr_total
-    } else {
-        0.0
-    };
-
-    tracks
-        .iter()
-        .map(|track| match track {
-            GridTrack::Fixed(v) => *v,
-            GridTrack::Fr(v) => per_fr * *v,
-            GridTrack::Auto => per_fr,
-            GridTrack::Minmax(min, max) => {
-                let desired = min + per_fr;
-                if *max < f32::MAX {
-                    desired.clamp(*min, *max)
-                } else {
-                    desired
-                }
-            }
-        })
-        .collect()
-}
-
-/// Lay out a CSS Grid container into GridRow layout elements.
-#[allow(clippy::too_many_arguments)]
-fn flatten_grid_container(
-    el: &ElementNode,
-    style: &ComputedStyle,
-    available_width: f32,
-    output: &mut Vec<LayoutElement>,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    fonts: &HashMap<String, TtfFont>,
-) {
-    let inner_width = available_width - style.padding.left - style.padding.right;
-    let gap = style.grid_gap;
-
-    let col_widths = resolve_grid_columns(&style.grid_template_columns, inner_width, gap);
-    let num_cols = col_widths.len();
-
-    // Build ancestors list for children of this element
-    let mut child_ancestors: Vec<AncestorInfo> = ancestors.to_vec();
-    child_ancestors.push(AncestorInfo {
-        element: el,
-        child_index: 0,
-        sibling_count: 0,
-        preceding_siblings: Vec::new(),
-    });
-
-    // Collect element children (skip text nodes)
-    let children: Vec<&ElementNode> = el
-        .children
-        .iter()
-        .filter_map(|child| {
-            if let DomNode::Element(child_el) = child {
-                Some(child_el)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let child_count = children.len();
-
-    // Lay out children into grid cells, row by row
-    let mut child_idx = 0;
-    let mut is_first_row = true;
-    let mut grid_children: Vec<LayoutElement> = Vec::new();
-
-    while child_idx < children.len() {
-        let row_end = (child_idx + num_cols).min(children.len());
-        let mut cells = Vec::new();
-
-        for (col, child_el) in children[child_idx..row_end].iter().enumerate() {
-            let classes = child_el.class_list();
-            let selector_ctx = SelectorContext {
-                ancestors: child_ancestors.clone(),
-                child_index: child_idx + col,
-                sibling_count: child_count,
-                preceding_siblings: Vec::new(),
-            };
-            let child_style = compute_style_with_context(
-                child_el.tag,
-                child_el.style_attr(),
-                style,
-                rules,
-                child_el.tag_name(),
-                &classes,
-                child_el.id(),
-                &child_el.attributes,
-                &selector_ctx,
-            );
-
-            let cell_width = col_widths[col];
-            let cell_inner =
-                (cell_width - child_style.padding.left - child_style.padding.right).max(1.0);
-
-            let mut runs = Vec::new();
-            FlexTextRunCollector {
-                runs: &mut runs,
-                rules,
-                fonts,
-            }
-            .collect(
-                &child_el.children,
-                &child_style,
-                None,
-                (0.0, 0.0),
-                &child_ancestors,
-            );
-            let lines = wrap_text_runs(
-                runs,
-                TextWrapOptions::new(
-                    cell_inner,
-                    child_style.font_size,
-                    resolved_line_height_factor(&child_style, fonts),
-                    child_style.overflow_wrap,
-                ),
-                fonts,
-            );
-
-            let bg = child_style
-                .background_color
-                .map(|c: crate::types::Color| c.to_f32_rgba());
-
-            cells.push(TableCell {
-                lines,
-                nested_rows: Vec::new(),
-                bold: child_style.font_weight == FontWeight::Bold,
-                background_color: bg,
-                padding_top: child_style.padding.top,
-                padding_right: child_style.padding.right,
-                padding_bottom: child_style.padding.bottom,
-                padding_left: child_style.padding.left,
-                colspan: 1,
-                rowspan: 1,
-                border: LayoutBorder::from_computed(&child_style.border),
-                text_align: child_style.text_align,
-                vertical_align: child_style.vertical_align,
-            });
-        }
-
-        // Fill remaining columns with empty cells if the row is incomplete
-        while cells.len() < num_cols {
-            cells.push(TableCell {
-                lines: Vec::new(),
-                nested_rows: Vec::new(),
-                bold: false,
-                background_color: None,
-                padding_top: 0.0,
-                padding_right: 0.0,
-                padding_bottom: 0.0,
-                padding_left: 0.0,
-                colspan: 1,
-                rowspan: 1,
-                border: LayoutBorder::default(),
-                text_align: TextAlign::Left,
-                vertical_align: VerticalAlign::Baseline,
-            });
-        }
-
-        let margin_top = if is_first_row { 0.0 } else { gap };
-
-        grid_children.push(LayoutElement::GridRow {
-            cells,
-            col_widths: col_widths.clone(),
-            gap,
-            margin_top,
-            margin_bottom: 0.0,
-            border: LayoutBorder::default(),
-            padding_left: 0.0,
-            padding_right: 0.0,
-            padding_top: 0.0,
-            padding_bottom: 0.0,
-        });
-
-        is_first_row = false;
-        child_idx = row_end;
-    }
-
-    // Wrap all grid rows in a Container that carries the border, padding,
-    // and background of the grid container element.
-    let bg = style
-        .background_color
-        .map(|c: crate::types::Color| c.to_f32_rgba());
-    let BackgroundFields {
-        gradient: background_gradient,
-        radial_gradient: background_radial_gradient,
-        svg: background_svg,
-        blur_radius: background_blur_radius,
-        size: background_size,
-        position: background_position,
-        repeat: background_repeat,
-        origin: background_origin,
-    } = BackgroundFields::from_style(style);
-    output.push(LayoutElement::Container {
-        children: grid_children,
-        background_color: bg,
-        border: LayoutBorder::from_computed(&style.border),
-        border_radius: style.border_radius,
-        padding_top: style.padding.top,
-        padding_bottom: style.padding.bottom,
-        padding_left: style.padding.left,
-        padding_right: style.padding.right,
-        margin_top: style.margin.top,
-        margin_bottom: style.margin.bottom,
-        block_width: Some(inner_width + style.padding.left + style.padding.right),
-        block_height: None,
-        opacity: style.opacity,
-        position: style.position,
-        offset_top: 0.0,
-        offset_left: 0.0,
-        overflow: style.overflow,
-        transform: style.transform,
-        box_shadow: style.box_shadow,
-        background_gradient,
-        background_radial_gradient,
-        background_svg,
-        background_blur_radius,
-        background_size,
-        background_position,
-        background_repeat,
-        background_origin,
-        z_index: style.z_index,
-    });
-}
-
-/// Parse a width for a `<col>` / `<colgroup>` element.
-///
-/// Valid inline `width` declarations take precedence. Malformed inline
-/// declarations are ignored so the `width` attribute can still act as a
-/// fallback. `width: auto` explicitly clears the width.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum TableTrackWidth {
-    Points(f32),
-    Percent(f32),
-}
-
-fn resolve_table_percentage_width(table_width: f32, percent: f32) -> f32 {
-    // Percentage `<col>` and `<colgroup>` widths resolve against the table
-    // width itself. Border-spacing is applied later when laying out the cells
-    // so it must not shrink the percentage basis.
-    table_width * percent
-}
-
-impl TableTrackWidth {
-    fn resolve(self, table_width: f32) -> f32 {
-        match self {
-            Self::Points(width) => width,
-            Self::Percent(percent) => resolve_table_percentage_width(table_width, percent),
-        }
-    }
-}
-
-fn compute_column_style(
-    el: &ElementNode,
-    parent_style: &ComputedStyle,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    child_index: usize,
-    sibling_count: usize,
-) -> ComputedStyle {
-    let classes = el.class_list();
-    let selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
-        child_index,
-        sibling_count,
-        preceding_siblings: Vec::new(),
-    };
-    compute_style_with_context(
-        el.tag,
-        el.style_attr(),
-        parent_style,
-        rules,
-        el.tag_name(),
-        &classes,
-        el.id(),
-        &el.attributes,
-        &selector_ctx,
-    )
-}
-
-fn parse_element_width(el: &ElementNode) -> Option<TableTrackWidth> {
-    if let Some(inline_width) = parse_element_inline_width(el) {
-        return inline_width;
-    }
-    el.attributes
-        .get("width")
-        .and_then(|val| parse_table_track_width(val))
-}
-
-fn parse_element_inline_width(el: &ElementNode) -> Option<Option<TableTrackWidth>> {
-    if let Some(style_str) = el.style_attr() {
-        let mut last_inline_width = None;
-        for decl in style_str.split(';').map(str::trim) {
-            if let Some((prop, val)) = decl.split_once(':') {
-                if prop.trim().eq_ignore_ascii_case("width") {
-                    let val = strip_important(val).trim();
-                    last_inline_width = parse_inline_width_value(val).or(last_inline_width);
-                }
-            }
-        }
-        return last_inline_width;
-    }
-    None
-}
-
-fn parse_col_width(
-    col_el: &ElementNode,
-    parent_style: &ComputedStyle,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    child_index: usize,
-    sibling_count: usize,
-) -> Option<TableTrackWidth> {
-    let computed_style = compute_column_style(
-        col_el,
-        parent_style,
-        rules,
-        ancestors,
-        child_index,
-        sibling_count,
-    );
-    if let Some(inline_width) = parse_column_inline_width(col_el, computed_style.width) {
-        return inline_width;
-    }
-    computed_style
-        .width
-        .map(TableTrackWidth::Points)
-        .or_else(|| {
-            col_el
-                .attributes
-                .get("width")
-                .and_then(|val| parse_table_track_width(val))
-        })
-}
-
-fn parse_column_inline_width(
-    el: &ElementNode,
-    computed_width: Option<f32>,
-) -> Option<Option<TableTrackWidth>> {
-    let style_str = el.style_attr()?;
-    let inline = crate::parser::css::parse_inline_style(style_str);
-    match inline.get("width") {
-        Some(CssValue::Keyword(k)) if k.eq_ignore_ascii_case("auto") => Some(None),
-        Some(_) => computed_width.map(|width| Some(TableTrackWidth::Points(width))),
-        None => None,
-    }
-}
-
-fn parse_percent_width(val: &str) -> Option<f32> {
-    let pct_str = val.trim().strip_suffix('%')?;
-    pct_str.trim().parse::<f32>().ok().map(|pct| pct / 100.0)
-}
-
-fn parse_table_track_width(val: &str) -> Option<TableTrackWidth> {
-    if let Some(percent) = parse_percent_width(val) {
-        return Some(TableTrackWidth::Percent(percent));
-    }
-    match crate::parser::css::parse_length(val) {
-        Some(CssValue::Length(width)) => Some(TableTrackWidth::Points(width)),
-        _ => None,
-    }
-}
-
-fn parse_inline_width_value(val: &str) -> Option<Option<TableTrackWidth>> {
-    if val.eq_ignore_ascii_case("auto") {
-        return Some(None);
-    }
-    parse_table_track_width(val).map(Some).or_else(|| {
-        crate::parser::css::parse_length(val)
-            .is_some()
-            .then_some(None)
-    })
-}
-
-fn strip_important(val: &str) -> &str {
-    val.strip_suffix("!important")
-        .map(str::trim_end)
-        .unwrap_or(val)
-}
-
-fn parse_col_span(el: &ElementNode) -> usize {
-    el.attributes
-        .get("span")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1)
-        .clamp(1, 1000)
-}
-
-fn assign_explicit_col_widths(
-    explicit_col_widths: &mut [Option<TableTrackWidth>],
-    col_idx: &mut usize,
-    span: usize,
-    width: Option<TableTrackWidth>,
-) {
-    for slot in explicit_col_widths.iter_mut().skip(*col_idx).take(span) {
-        *slot = width;
-    }
-    *col_idx = col_idx.saturating_add(span);
-}
-
-fn resolve_table_inner_width(style: &ComputedStyle, available_width: f32) -> f32 {
-    let containing_width = (available_width - style.margin.left - style.margin.right).max(0.0);
-    style
-        .width
-        .or_else(|| {
-            style
-                .percentage_sizing
-                .width
-                .map(|percent| containing_width * percent / 100.0)
-        })
-        .map_or(containing_width, |width| {
-            width.min(containing_width).max(0.0)
-        })
-}
-
-fn uses_fixed_table_layout(style: &ComputedStyle) -> bool {
-    style.table_layout == TableLayout::Fixed
-        && (style.width.is_some() || style.percentage_sizing.width.is_some())
-}
-
-fn resolve_cell_track_width(
-    cell_el: &ElementNode,
-    cell_style: &ComputedStyle,
-    table_width: f32,
-) -> Option<f32> {
-    parse_element_width(cell_el)
-        .map(|width| width.resolve(table_width))
-        .or(cell_style.width)
-}
-
-fn apply_cell_width_to_columns(
-    col_widths: &mut [Option<f32>],
-    start: usize,
-    colspan: usize,
-    width: f32,
-) {
-    if colspan == 0 || start >= col_widths.len() {
-        return;
-    }
-    let per_column_width = width / colspan as f32;
-    for slot in col_widths.iter_mut().skip(start).take(colspan) {
-        *slot = Some(slot.map_or(per_column_width, |existing| existing.max(per_column_width)));
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn resolve_fixed_table_columns(
-    table_style: &ComputedStyle,
-    table_width: f32,
-    rows: &[&ElementNode],
-    row_section_indices: &[usize],
-    row_section_sizes: &[usize],
-    row_section_elements: &[Option<&ElementNode>],
-    row_section_child_indices: &[usize],
-    row_section_sibling_counts: &[usize],
-    table_ancestors: &[AncestorInfo],
-    explicit_col_widths: &[Option<TableTrackWidth>],
-    num_cols: usize,
-    rules: &[CssRule],
-) -> Vec<f32> {
-    let mut col_widths: Vec<Option<f32>> = explicit_col_widths
-        .iter()
-        .map(|width| width.map(|specified| specified.resolve(table_width)))
-        .collect();
-
-    if let Some(first_row) = rows.first() {
-        let mut row_ancestors = table_ancestors.to_vec();
-        if let Some(section_el) = row_section_elements.first().copied().flatten() {
-            row_ancestors.push(AncestorInfo {
-                element: section_el,
-                child_index: row_section_child_indices.first().copied().unwrap_or(0),
-                sibling_count: row_section_sibling_counts.first().copied().unwrap_or(0),
-                preceding_siblings: Vec::new(),
-            });
-        }
-        let row_selector_ctx = SelectorContext {
-            ancestors: row_ancestors,
-            child_index: row_section_indices.first().copied().unwrap_or(0),
-            sibling_count: row_section_sizes.first().copied().unwrap_or(1),
-            preceding_siblings: Vec::new(),
-        };
-        let row_classes = first_row.class_list();
-        let mut row_style = compute_style_with_context(
-            first_row.tag,
-            first_row.style_attr(),
-            table_style,
-            rules,
-            first_row.tag_name(),
-            &row_classes,
-            first_row.id(),
-            &first_row.attributes,
-            &row_selector_ctx,
-        );
-        row_style.width = Some(table_width);
-
-        let mut col_pos = 0usize;
-        for child in &first_row.children {
-            let DomNode::Element(cell_el) = child else {
-                continue;
-            };
-            if cell_el.tag != HtmlTag::Td && cell_el.tag != HtmlTag::Th {
-                continue;
-            }
-            let colspan = cell_el
-                .attributes
-                .get("colspan")
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(1)
-                .max(1);
-
-            let cell_classes = cell_el.class_list();
-            let mut cell_ancestors = row_selector_ctx.ancestors.clone();
-            cell_ancestors.push(AncestorInfo {
-                element: first_row,
-                child_index: row_selector_ctx.child_index,
-                sibling_count: row_selector_ctx.sibling_count,
-                preceding_siblings: Vec::new(),
-            });
-            let cell_selector_ctx = SelectorContext {
-                ancestors: cell_ancestors,
-                child_index: col_pos,
-                sibling_count: num_cols,
-                preceding_siblings: Vec::new(),
-            };
-            let cell_style = compute_style_with_context(
-                cell_el.tag,
-                cell_el.style_attr(),
-                &row_style,
-                rules,
-                cell_el.tag_name(),
-                &cell_classes,
-                cell_el.id(),
-                &cell_el.attributes,
-                &cell_selector_ctx,
-            );
-
-            if let Some(width) = resolve_cell_track_width(cell_el, &cell_style, table_width) {
-                apply_cell_width_to_columns(&mut col_widths, col_pos, colspan, width);
-            }
-
-            col_pos = col_pos.saturating_add(colspan);
-            if col_pos >= num_cols {
-                break;
-            }
-        }
-    }
-
-    let assigned_width: f32 = col_widths.iter().flatten().copied().sum();
-    let unresolved_count = col_widths.iter().filter(|width| width.is_none()).count();
-    if unresolved_count > 0 {
-        let remaining_width = (table_width - assigned_width).max(0.0);
-        let default_width = remaining_width / unresolved_count as f32;
-        for width in &mut col_widths {
-            if width.is_none() {
-                *width = Some(default_width);
-            }
-        }
-    }
-
-    let mut resolved_widths: Vec<f32> = col_widths
-        .into_iter()
-        .map(|width| width.unwrap_or(0.0))
-        .collect();
-    let resolved_total: f32 = resolved_widths.iter().sum();
-    let used_table_width = table_width.max(resolved_total);
-    if used_table_width > resolved_total && !resolved_widths.is_empty() {
-        let extra_per_column = (used_table_width - resolved_total) / resolved_widths.len() as f32;
-        for width in &mut resolved_widths {
-            *width += extra_per_column;
-        }
-    }
-
-    if resolved_widths.iter().all(|width| *width <= 0.0) && num_cols > 0 {
-        return vec![table_width / num_cols as f32; num_cols];
-    }
-
-    resolved_widths
-}
-
-#[allow(clippy::too_many_arguments)]
-fn flatten_table(
-    el: &ElementNode,
-    style: &ComputedStyle,
-    available_width: f32,
-    output: &mut Vec<LayoutElement>,
-    rules: &[CssRule],
-    fonts: &HashMap<String, TtfFont>,
-    ancestors: &[AncestorInfo],
-    table_child_index: usize,
-    table_sibling_count: usize,
-    counter_state: &mut CounterState,
-) {
-    let inner_width = resolve_table_inner_width(style, available_width);
-
-    // Build ancestor chain: everything above + the table element itself.
-    let mut table_ancestors: Vec<AncestorInfo> = ancestors.to_vec();
-    table_ancestors.push(AncestorInfo {
-        element: el,
-        child_index: table_child_index,
-        sibling_count: table_sibling_count,
-        preceding_siblings: Vec::new(),
-    });
-
-    // Collect all <tr> elements (from direct children, thead, tbody, tfoot).
-    // Track section-relative indices so nth-child counts within each section
-    // (thead, tbody, tfoot) as browsers do, not globally.
-    // Also track the section element so descendant selectors can see it.
-    let mut rows: Vec<&ElementNode> = Vec::new();
-    let mut row_section_indices: Vec<usize> = Vec::new();
-    let mut row_section_sizes: Vec<usize> = Vec::new();
-    let mut row_section_elements: Vec<Option<&ElementNode>> = Vec::new();
-    let mut row_section_child_indices: Vec<usize> = Vec::new();
-    let mut row_section_sibling_counts: Vec<usize> = Vec::new();
-    let section_count = el
-        .children
-        .iter()
-        .filter(|c| matches!(c, DomNode::Element(_)))
-        .count();
-    for (section_child_idx, child) in el.children.iter().enumerate() {
-        if let DomNode::Element(child_el) = child {
-            match child_el.tag {
-                HtmlTag::Tr => {
-                    // Direct <tr> child of <table> — standalone section
-                    let idx = rows.len();
-                    rows.push(child_el);
-                    row_section_indices.push(idx);
-                    row_section_sizes.push(1);
-                    row_section_elements.push(None);
-                    row_section_child_indices.push(section_child_idx);
-                    row_section_sibling_counts.push(section_count);
-                }
-                HtmlTag::Thead | HtmlTag::Tbody | HtmlTag::Tfoot => {
-                    let section_rows: Vec<&ElementNode> = child_el
-                        .children
-                        .iter()
-                        .filter_map(|gc| {
-                            if let DomNode::Element(g) = gc {
-                                if g.tag == HtmlTag::Tr {
-                                    return Some(g);
-                                }
-                            }
-                            None
-                        })
-                        .collect();
-                    let section_size = section_rows.len();
-                    for (i, gc) in section_rows.into_iter().enumerate() {
-                        rows.push(gc);
-                        row_section_indices.push(i);
-                        row_section_sizes.push(section_size);
-                        row_section_elements.push(Some(child_el));
-                        row_section_child_indices.push(section_child_idx);
-                        row_section_sibling_counts.push(section_count);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    if rows.is_empty() {
-        return;
-    }
-
-    // Determine column count from the widest row, accounting for colspan
-    let num_cols = rows
-        .iter()
-        .map(|row| {
-            row.children
-                .iter()
-                .filter_map(|c| {
-                    if let DomNode::Element(e) = c {
-                        if e.tag == HtmlTag::Td || e.tag == HtmlTag::Th {
-                            let colspan = e
-                                .attributes
-                                .get("colspan")
-                                .and_then(|v| v.parse::<usize>().ok())
-                                .unwrap_or(1)
-                                .max(1);
-                            return Some(colspan);
-                        }
-                    }
-                    None
-                })
-                .sum::<usize>()
-        })
-        .max()
-        .unwrap_or(1);
-
-    let mut column_parent_style = style.clone();
-    column_parent_style.width = Some(inner_width);
-
-    // --- Extract explicit column widths from <colgroup>/<col> elements ---
-    let mut explicit_col_widths: Vec<Option<TableTrackWidth>> = vec![None; num_cols];
-    {
-        let mut col_idx = 0usize;
-        for (section_child_idx, child) in el.children.iter().enumerate() {
-            if let DomNode::Element(child_el) = child {
-                match child_el.tag {
-                    HtmlTag::Colgroup => {
-                        let cols: Vec<&ElementNode> = child_el
-                            .children
-                            .iter()
-                            .filter_map(|gc| match gc {
-                                DomNode::Element(g) if g.tag == HtmlTag::Col => Some(g),
-                                _ => None,
-                            })
-                            .collect();
-                        let colgroup_style = compute_column_style(
-                            child_el,
-                            &column_parent_style,
-                            rules,
-                            &table_ancestors,
-                            section_child_idx,
-                            section_count,
-                        );
-                        if !cols.is_empty() {
-                            let mut colgroup_basis_style = colgroup_style.clone();
-                            colgroup_basis_style.width = Some(inner_width);
-                            let mut colgroup_ancestors = table_ancestors.clone();
-                            colgroup_ancestors.push(AncestorInfo {
-                                element: child_el,
-                                child_index: section_child_idx,
-                                sibling_count: section_count,
-                                preceding_siblings: Vec::new(),
-                            });
-                            let col_sibling_count = cols.len();
-                            for (col_child_idx, col_el) in cols.into_iter().enumerate() {
-                                assign_explicit_col_widths(
-                                    &mut explicit_col_widths,
-                                    &mut col_idx,
-                                    parse_col_span(col_el),
-                                    parse_col_width(
-                                        col_el,
-                                        &colgroup_basis_style,
-                                        rules,
-                                        &colgroup_ancestors,
-                                        col_child_idx,
-                                        col_sibling_count,
-                                    ),
-                                );
-                            }
-                            continue;
-                        }
-                        assign_explicit_col_widths(
-                            &mut explicit_col_widths,
-                            &mut col_idx,
-                            parse_col_span(child_el),
-                            parse_col_width(
-                                child_el,
-                                &column_parent_style,
-                                rules,
-                                &table_ancestors,
-                                section_child_idx,
-                                section_count,
-                            ),
-                        );
-                    }
-                    HtmlTag::Col => {
-                        assign_explicit_col_widths(
-                            &mut explicit_col_widths,
-                            &mut col_idx,
-                            parse_col_span(child_el),
-                            parse_col_width(
-                                child_el,
-                                &column_parent_style,
-                                rules,
-                                &table_ancestors,
-                                section_child_idx,
-                                section_count,
-                            ),
-                        );
-                    }
-                    _ => continue,
-                }
-            }
-        }
-    }
-    let has_explicit_widths = explicit_col_widths.iter().any(|width| width.is_some());
-    let col_widths: Vec<f32> = if uses_fixed_table_layout(style) {
-        resolve_fixed_table_columns(
-            style,
-            inner_width,
-            &rows,
-            &row_section_indices,
-            &row_section_sizes,
-            &row_section_elements,
-            &row_section_child_indices,
-            &row_section_sibling_counts,
-            &table_ancestors,
-            &explicit_col_widths,
-            num_cols,
-            rules,
-        )
-    } else {
-        // --- Auto-sizing pass: measure preferred content width for each column ---
-        let min_col_width: f32 = 30.0;
-        let mut preferred_widths: Vec<f32> = vec![0.0; num_cols];
-
-        for (sizing_row_idx, row) in rows.iter().enumerate() {
-            let row_classes = row.class_list();
-            // Build ancestors for the row: table + optional section element
-            let mut sizing_row_ancestors = table_ancestors.clone();
-            if let Some(section_el) = row_section_elements[sizing_row_idx] {
-                sizing_row_ancestors.push(AncestorInfo {
-                    element: section_el,
-                    child_index: row_section_child_indices[sizing_row_idx],
-                    sibling_count: row_section_sibling_counts[sizing_row_idx],
-                    preceding_siblings: Vec::new(),
-                });
-            }
-            let sizing_row_ctx = SelectorContext {
-                ancestors: sizing_row_ancestors,
-                child_index: row_section_indices[sizing_row_idx],
-                sibling_count: row_section_sizes[sizing_row_idx],
-                preceding_siblings: Vec::new(),
-            };
-            let mut row_style = compute_style_with_context(
-                row.tag,
-                row.style_attr(),
-                style,
-                rules,
-                row.tag_name(),
-                &row_classes,
-                row.id(),
-                &row.attributes,
-                &sizing_row_ctx,
-            );
-            row_style.width = Some(inner_width);
-            let mut col_pos: usize = 0;
-            for child in &row.children {
-                if let DomNode::Element(cell_el) = child {
-                    if cell_el.tag == HtmlTag::Td || cell_el.tag == HtmlTag::Th {
-                        let colspan = cell_el
-                            .attributes
-                            .get("colspan")
-                            .and_then(|v| v.parse::<usize>().ok())
-                            .unwrap_or(1)
-                            .max(1);
-                        let cell_classes = cell_el.class_list();
-                        let mut cell_sizing_ancestors = sizing_row_ctx.ancestors.clone();
-                        cell_sizing_ancestors.push(AncestorInfo {
-                            element: row,
-                            child_index: row_section_indices[sizing_row_idx],
-                            sibling_count: row_section_sizes[sizing_row_idx],
-                            preceding_siblings: Vec::new(),
-                        });
-                        let cell_sizing_ctx = SelectorContext {
-                            ancestors: cell_sizing_ancestors,
-                            child_index: col_pos,
-                            sibling_count: num_cols,
-                            preceding_siblings: Vec::new(),
-                        };
-                        let cell_style = compute_style_with_context(
-                            cell_el.tag,
-                            cell_el.style_attr(),
-                            &row_style,
-                            rules,
-                            cell_el.tag_name(),
-                            &cell_classes,
-                            cell_el.id(),
-                            &cell_el.attributes,
-                            &cell_sizing_ctx,
-                        );
-                        let mut runs = Vec::new();
-                        let mut nested_rows = Vec::new();
-                        let recurse_descendants = cell_el.children.iter().any(
-                            |node| matches!(node, DomNode::Element(e) if recurses_as_layout_child(e.tag)),
-                        );
-                        let mut text_ancestors = cell_sizing_ctx.ancestors.clone();
-                        text_ancestors.push(AncestorInfo {
-                            element: cell_el,
-                            child_index: col_pos,
-                            sibling_count: num_cols,
-                            preceding_siblings: Vec::new(),
-                        });
-                        collect_table_cell_content_inner(
-                            &cell_el.children,
-                            &cell_style,
-                            &mut runs,
-                            &mut nested_rows,
-                            None,
-                            rules,
-                            fonts,
-                            false,
-                            recurse_descendants,
-                            recurse_descendants,
-                            &text_ancestors,
-                            inner_width.max(1.0),
-                            counter_state,
-                        );
-                        // Estimate content width using estimate_word_width for accurate
-                        // measurement. Use the maximum of (full text width, longest word
-                        // width) to avoid hyphenation of short columns like "Unit Price".
-                        let content_width: f32 = runs
-                            .iter()
-                            .map(|run| {
-                                // Measure full text width using estimate_word_width
-                                let full_width = estimate_word_width(
-                                    &run.text,
-                                    run.font_size,
-                                    &run.font_family,
-                                    run.bold,
-                                    run.italic,
-                                    fonts,
-                                );
-                                // Also ensure the column is at least as wide as
-                                // the longest word to prevent hyphenation.
-                                let longest_word_width = run
-                                    .text
-                                    .split_whitespace()
-                                    .map(|w| {
-                                        estimate_word_width(
-                                            w,
-                                            run.font_size,
-                                            &run.font_family,
-                                            run.bold,
-                                            run.italic,
-                                            fonts,
-                                        )
-                                    })
-                                    .fold(0.0f32, f32::max);
-                                full_width.max(longest_word_width)
-                            })
-                            .sum();
-                        let nested_width = nested_rows
-                            .iter()
-                            .map(table_row_content_width)
-                            .fold(0.0f32, f32::max);
-                        let total_preferred = content_width.max(nested_width)
-                            + cell_style.padding.left
-                            + cell_style.padding.right;
-                        if colspan == 1 {
-                            if col_pos < num_cols {
-                                preferred_widths[col_pos] =
-                                    preferred_widths[col_pos].max(total_preferred);
-                            }
-                        } else {
-                            let per_col = total_preferred / colspan as f32;
-                            for i in 0..colspan {
-                                if col_pos + i < num_cols {
-                                    preferred_widths[col_pos + i] =
-                                        preferred_widths[col_pos + i].max(per_col);
-                                }
-                            }
-                        }
-                        col_pos += colspan;
-                    }
-                }
-            }
-        }
-
-        for width in &mut preferred_widths {
-            if *width < min_col_width {
-                *width = min_col_width;
-            }
-        }
-
-        if has_explicit_widths {
-            preferred_widths
-                .iter()
-                .zip(explicit_col_widths.iter())
-                .map(|(preferred, explicit)| {
-                    explicit
-                        .map(|width| width.resolve(inner_width).max(min_col_width))
-                        .unwrap_or_else(|| preferred.max(min_col_width))
-                })
-                .collect()
-        } else {
-            let total_preferred: f32 = preferred_widths.iter().sum();
-            if total_preferred <= inner_width {
-                let extra = inner_width - total_preferred;
-                if total_preferred > 0.0 && extra > 0.0 {
-                    preferred_widths
-                        .iter()
-                        .map(|width| width + (width / total_preferred) * extra)
-                        .collect()
-                } else {
-                    preferred_widths
-                }
-            } else {
-                let scale = inner_width / total_preferred;
-                preferred_widths
-                    .iter()
-                    .map(|width| (width * scale).max(min_col_width))
-                    .collect()
-            }
-        }
-    };
-
-    // Build layout rows, tracking cells occupied by rowspan from previous rows.
-    // Each entry in `occupied` tracks the remaining rowspan count for that column.
-    let mut occupied: Vec<usize> = vec![0; num_cols];
-    let mut is_first = true;
-    for (row_idx, row) in rows.iter().enumerate() {
-        let row_classes = row.class_list();
-        // Use section-relative index for nth-child matching (browsers count
-        // within thead/tbody/tfoot, not globally across all rows).
-        let section_idx = row_section_indices[row_idx];
-        let section_size = row_section_sizes[row_idx];
-        // Build ancestors for the row: table + optional section element
-        let mut row_ancestors = table_ancestors.clone();
-        if let Some(section_el) = row_section_elements[row_idx] {
-            row_ancestors.push(AncestorInfo {
-                element: section_el,
-                child_index: row_section_child_indices[row_idx],
-                sibling_count: row_section_sibling_counts[row_idx],
-                preceding_siblings: Vec::new(),
-            });
-        }
-        let row_selector_ctx = SelectorContext {
-            ancestors: row_ancestors,
-            child_index: section_idx,
-            sibling_count: section_size,
-            preceding_siblings: Vec::new(),
-        };
-        let mut row_style = compute_style_with_context(
-            row.tag,
-            row.style_attr(),
-            style,
-            rules,
-            row.tag_name(),
-            &row_classes,
-            row.id(),
-            &row.attributes,
-            &row_selector_ctx,
-        );
-        row_style.width = Some(inner_width);
-        let mut cells = Vec::new();
-
-        // Current logical column position in the grid
-        let mut col_pos: usize = 0;
-        let mut child_iter = row.children.iter().filter_map(|child| {
-            if let DomNode::Element(cell_el) = child {
-                if cell_el.tag == HtmlTag::Td || cell_el.tag == HtmlTag::Th {
-                    return Some(cell_el);
-                }
-            }
-            None
-        });
-
-        // Process cells, skipping occupied positions and inserting phantom cells
-        let mut next_cell = child_iter.next();
-        while col_pos < num_cols {
-            if occupied[col_pos] > 0 {
-                // This position is occupied by a rowspan from a previous row.
-                // Insert a phantom cell (rowspan = 0) as a placeholder.
-                let span_cols = {
-                    // Count how many consecutive occupied columns share this rowspan
-                    let remaining = occupied[col_pos];
-                    let mut count = 1;
-                    while col_pos + count < num_cols && occupied[col_pos + count] == remaining {
-                        count += 1;
-                    }
-                    count
-                };
-                cells.push(TableCell {
-                    lines: Vec::new(),
-                    nested_rows: Vec::new(),
-                    bold: false,
-                    background_color: None,
-                    padding_top: 0.0,
-                    padding_right: 0.0,
-                    padding_bottom: 0.0,
-                    padding_left: 0.0,
-                    colspan: span_cols,
-                    rowspan: 0, // phantom cell marker
-                    border: LayoutBorder::default(),
-                    text_align: TextAlign::Left,
-                    vertical_align: VerticalAlign::Baseline,
-                });
-                for i in 0..span_cols {
-                    occupied[col_pos + i] -= 1;
-                }
-                col_pos += span_cols;
-                continue;
-            }
-
-            // Place the next real cell at this position
-            let Some(cell_el) = next_cell else { break };
-            next_cell = child_iter.next();
-
-            let colspan = cell_el
-                .attributes
-                .get("colspan")
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(1)
-                .max(1);
-            let rowspan = cell_el
-                .attributes
-                .get("rowspan")
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(1)
-                .max(1);
-
-            let cell_classes = cell_el.class_list();
-            let mut cell_ancestors = row_selector_ctx.ancestors.clone();
-            cell_ancestors.push(AncestorInfo {
-                element: row,
-                child_index: section_idx,
-                sibling_count: section_size,
-                preceding_siblings: Vec::new(),
-            });
-            let cell_selector_ctx = SelectorContext {
-                ancestors: cell_ancestors,
-                child_index: col_pos,
-                sibling_count: num_cols,
-                preceding_siblings: Vec::new(),
-            };
-            let cell_style = compute_style_with_context(
-                cell_el.tag,
-                cell_el.style_attr(),
-                &row_style,
-                rules,
-                cell_el.tag_name(),
-                &cell_classes,
-                cell_el.id(),
-                &cell_el.attributes,
-                &cell_selector_ctx,
-            );
-            // Compute effective width from auto-sized column widths
-            let effective_width: f32 = col_widths.iter().skip(col_pos).take(colspan).copied().sum();
-            let cell_inner = effective_width - cell_style.padding.left - cell_style.padding.right;
-            let mut cell_content_style = cell_style.clone();
-            cell_content_style.width = Some(cell_inner.max(0.0));
-
-            let mut runs = Vec::new();
-            let mut nested_rows = Vec::new();
-            let recurse_descendants = cell_el
-                .children
-                .iter()
-                .any(|node| matches!(node, DomNode::Element(e) if recurses_as_layout_child(e.tag)));
-            let mut text_ancestors = cell_selector_ctx.ancestors.clone();
-            text_ancestors.push(AncestorInfo {
-                element: cell_el,
-                child_index: col_pos,
-                sibling_count: num_cols,
-                preceding_siblings: Vec::new(),
-            });
-            let (block_margin_top, block_margin_bottom) = table_cell_edge_block_margins(
-                &cell_el.children,
-                &cell_content_style,
-                rules,
-                &text_ancestors,
-            );
-            collect_table_cell_content_inner(
-                &cell_el.children,
-                &cell_content_style,
-                &mut runs,
-                &mut nested_rows,
-                None,
-                rules,
-                fonts,
-                false,
-                recurse_descendants,
-                recurse_descendants,
-                &text_ancestors,
-                cell_inner.max(1.0),
-                counter_state,
-            );
-            let lines = wrap_text_runs(
-                runs,
-                TextWrapOptions::new(
-                    cell_inner.max(1.0),
-                    cell_style.font_size,
-                    resolved_line_height_factor(&cell_style, fonts),
-                    cell_style.overflow_wrap,
-                ),
-                fonts,
-            );
-
-            let bg = cell_style
-                .background_color
-                .or(row_style.background_color)
-                .map(|c: crate::types::Color| c.to_f32_rgba());
-
-            cells.push(TableCell {
-                lines,
-                nested_rows,
-                bold: cell_style.font_weight == FontWeight::Bold,
-                background_color: bg,
-                padding_top: cell_style.padding.top + block_margin_top,
-                padding_right: cell_style.padding.right,
-                padding_bottom: cell_style.padding.bottom + block_margin_bottom,
-                padding_left: cell_style.padding.left,
-                colspan,
-                rowspan,
-                border: LayoutBorder::from_computed(&cell_style.border),
-                text_align: cell_style.text_align,
-                vertical_align: cell_style.vertical_align,
-            });
-
-            // Mark subsequent rows as occupied if rowspan > 1
-            if rowspan > 1 {
-                for i in 0..colspan {
-                    if col_pos + i < num_cols {
-                        occupied[col_pos + i] = rowspan - 1;
-                    }
-                }
-            }
-
-            col_pos += colspan;
-        }
-
-        if !cells.is_empty() {
-            output.push(LayoutElement::TableRow {
-                cells,
-                col_widths: col_widths.clone(),
-                margin_top: if is_first { style.margin.top } else { 0.0 },
-                margin_bottom: 0.0,
-                border_collapse: style.border_collapse,
-                border_spacing: style.border_spacing,
-            });
-            is_first = false;
-        }
-    }
-
-    // Add bottom margin after the last row
-    if let Some(LayoutElement::TableRow { margin_bottom, .. }) = output.last_mut() {
-        *margin_bottom = style.margin.bottom;
-    }
-}
-
-fn table_cell_edge_block_margins(
-    nodes: &[DomNode],
-    parent_style: &ComputedStyle,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-) -> (f32, f32) {
-    let element_sibling_count = nodes
-        .iter()
-        .filter(|node| matches!(node, DomNode::Element(_)))
-        .count();
-
-    let mut first_margin_top = None;
-    let mut last_margin_bottom = None;
-
-    for (node_index, node) in nodes.iter().enumerate() {
-        let DomNode::Element(element) = node else {
-            continue;
-        };
-        if element.tag == HtmlTag::Br
-            || element.tag == HtmlTag::Table
-            || element.children.is_empty()
-        {
-            continue;
-        }
-
-        let child_index = nodes[..node_index]
-            .iter()
-            .filter(|node| matches!(node, DomNode::Element(_)))
-            .count();
-        let preceding_siblings = nodes[..node_index]
-            .iter()
-            .filter_map(|node| match node {
-                DomNode::Element(element) => Some((
-                    element.tag_name().to_string(),
-                    element
-                        .class_list()
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
-                )),
-                _ => None,
-            })
-            .collect();
-        let selector_ctx = SelectorContext {
-            ancestors: ancestors.to_vec(),
-            child_index,
-            sibling_count: element_sibling_count,
-            preceding_siblings,
-        };
-        let child_style = compute_style_with_context(
-            element.tag,
-            element.style_attr(),
-            parent_style,
-            rules,
-            element.tag_name(),
-            &element.class_list(),
-            element.id(),
-            &element.attributes,
-            &selector_ctx,
-        );
-        if child_style.display == Display::Inline {
-            continue;
-        }
-
-        first_margin_top.get_or_insert(child_style.margin.top);
-        last_margin_bottom = Some(child_style.margin.bottom);
-    }
-
-    (
-        first_margin_top.unwrap_or(0.0),
-        last_margin_bottom.unwrap_or(0.0),
-    )
-}
-
-/// Collect text runs from flex child content, recursively descending into
-/// block-level children so that nested `<h1>`, `<p>`, etc. are captured.
-struct FlexTextRunCollector<'a> {
-    runs: &'a mut Vec<TextRun>,
-    rules: &'a [CssRule],
-    fonts: &'a HashMap<String, TtfFont>,
-}
-
-impl<'a> FlexTextRunCollector<'a> {
-    fn collect(
-        &mut self,
-        nodes: &[DomNode],
-        parent_style: &ComputedStyle,
-        link_url: Option<&str>,
-        text_padding: (f32, f32),
-        ancestors: &[AncestorInfo],
-    ) {
-        let preserve_ws = matches!(
-            parent_style.white_space,
-            WhiteSpace::Pre | WhiteSpace::PreWrap
-        );
-
-        for node in nodes {
-            match node {
-                DomNode::Text(text) => {
-                    let processed = if preserve_ws {
-                        text.clone()
-                    } else {
-                        collapse_whitespace(text)
-                    };
-                    // Apply CSS text-transform
-                    let processed = match parent_style.text_transform {
-                        crate::style::computed::TextTransform::Uppercase => {
-                            processed.to_uppercase()
-                        }
-                        crate::style::computed::TextTransform::Lowercase => {
-                            processed.to_lowercase()
-                        }
-                        crate::style::computed::TextTransform::Capitalize => {
-                            let mut result = String::with_capacity(processed.len());
-                            let mut prev_is_space = true;
-                            for c in processed.chars() {
-                                if prev_is_space && c.is_alphabetic() {
-                                    for uc in c.to_uppercase() {
-                                        result.push(uc);
-                                    }
-                                } else {
-                                    result.push(c);
-                                }
-                                prev_is_space = c.is_whitespace();
-                            }
-                            result
-                        }
-                        crate::style::computed::TextTransform::None => processed,
-                    };
-                    if !processed.is_empty() {
-                        push_text_run_with_fallback(
-                            TextRun {
-                                text: processed,
-                                font_size: parent_style.font_size,
-                                bold: parent_style.font_weight == FontWeight::Bold,
-                                italic: parent_style.font_style == FontStyle::Italic,
-                                underline: parent_style.text_decoration_underline,
-                                line_through: parent_style.text_decoration_line_through,
-                                color: parent_style.color.to_f32_rgb(),
-                                link_url: link_url.map(String::from),
-                                font_family: resolve_style_font_family(parent_style, self.fonts),
-                                background_color: parent_style
-                                    .background_color
-                                    .map(|c| c.to_f32_rgba()),
-                                padding: text_padding,
-                                border_radius: 0.0,
-                            },
-                            self.runs,
-                            self.fonts,
-                        );
-                    }
-                }
-                DomNode::Element(el) => {
-                    let classes = el.class_list();
-                    let selector_ctx = SelectorContext {
-                        ancestors: ancestors.to_vec(),
-                        child_index: 0,
-                        sibling_count: nodes.len(),
-                        preceding_siblings: Vec::new(),
-                    };
-                    let child_style = compute_style_with_context(
-                        el.tag,
-                        el.style_attr(),
-                        parent_style,
-                        self.rules,
-                        el.tag_name(),
-                        &classes,
-                        el.id(),
-                        &el.attributes,
-                        &selector_ctx,
-                    );
-
-                    if child_style.display == Display::None {
-                        continue;
-                    }
-
-                    let child_padding = if child_style.display == Display::Block
-                        || child_style.background_color.is_some()
-                        || child_style.border.has_any()
-                        || child_style.border_radius > 0.0
-                    {
-                        (child_style.padding.left, child_style.padding.top)
-                    } else {
-                        text_padding
-                    };
-                    let child_link_url = if el.tag == HtmlTag::A {
-                        el.attributes.get("href").map(|s| s.as_str()).or(link_url)
-                    } else {
-                        link_url
-                    };
-
-                    if el.tag == HtmlTag::Br {
-                        self.runs.push(TextRun {
-                            text: "\n".to_string(),
-                            font_size: parent_style.font_size,
-                            bold: false,
-                            italic: false,
-                            underline: false,
-                            line_through: false,
-                            color: (0.0, 0.0, 0.0),
-                            link_url: None,
-                            font_family: resolve_style_font_family(parent_style, self.fonts),
-                            background_color: None,
-                            padding: (0.0, 0.0),
-                            border_radius: 0.0,
-                        });
-                        continue;
-                    }
-
-                    let mut child_ancestors = ancestors.to_vec();
-                    child_ancestors.push(AncestorInfo {
-                        element: el,
-                        child_index: 0,
-                        sibling_count: nodes.len(),
-                        preceding_siblings: Vec::new(),
-                    });
-                    self.collect(
-                        &el.children,
-                        &child_style,
-                        child_link_url,
-                        child_padding,
-                        &child_ancestors,
-                    );
-                    if el.tag.is_block() && !self.runs.is_empty() {
-                        self.runs.push(TextRun {
-                            text: "\n".to_string(),
-                            font_size: child_style.font_size,
-                            bold: false,
-                            italic: false,
-                            underline: false,
-                            line_through: false,
-                            color: child_style.color.to_f32_rgb(),
-                            link_url: child_link_url.map(String::from),
-                            font_family: resolve_style_font_family(&child_style, self.fonts),
-                            background_color: None,
-                            padding: (0.0, 0.0),
-                            border_radius: 0.0,
-                        });
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Push a text run, splitting it into standard-font and fallback-font segments
-/// when the run uses a standard PDF font and contains characters outside
-/// WinAnsiEncoding.
-///
-/// Characters that cannot be encoded in WinAnsi (CJK, Arabic, emoji, etc.) are
-/// placed into separate runs that reference the `__unicode_fallback` custom font,
-/// which is rendered through the CIDFontType2/Identity-H pipeline.
-fn push_text_run_with_fallback(
-    run: TextRun,
-    runs: &mut Vec<TextRun>,
-    fonts: &HashMap<String, TtfFont>,
-) {
-    let is_standard_font = matches!(
-        run.font_family,
-        FontFamily::Helvetica | FontFamily::TimesRoman | FontFamily::Courier
-    );
-
-    // If using a custom font or there's no fallback loaded, push as-is.
-    if !is_standard_font || !fonts.contains_key(crate::system_fonts::UNICODE_FALLBACK_KEY) {
-        runs.push(run);
-        return;
-    }
-
-    // If everything is WinAnsi-encodable, no splitting needed.
-    if crate::render::pdf::is_winansi_encodable(&run.text) {
-        runs.push(run);
-        return;
-    }
-
-    // Split text into contiguous segments by font category:
-    // - WinAnsi: standard PDF font (Helvetica, etc.)
-    // - Emoji: emoji fallback font (Apple Color Emoji, Noto Color Emoji)
-    // - Unicode: unicode fallback font (Noto Sans CJK, etc.)
-    let unicode_family = FontFamily::Custom(crate::system_fonts::UNICODE_FALLBACK_KEY.to_string());
-    let has_emoji_font = fonts.contains_key(crate::system_fonts::EMOJI_FALLBACK_KEY);
-    let emoji_family = FontFamily::Custom(crate::system_fonts::EMOJI_FALLBACK_KEY.to_string());
-
-    #[derive(PartialEq, Clone, Copy)]
-    enum CharCategory {
-        WinAnsi,
-        Emoji,
-        Unicode,
-    }
-
-    let categorize = |ch: char| -> CharCategory {
-        if crate::render::pdf::is_winansi_char(ch) {
-            CharCategory::WinAnsi
-        } else if has_emoji_font && crate::fonts::is_emoji_char(ch as u32) {
-            CharCategory::Emoji
-        } else {
-            CharCategory::Unicode
-        }
-    };
-
-    let family_for = |cat: CharCategory| -> FontFamily {
-        match cat {
-            CharCategory::WinAnsi => run.font_family.clone(),
-            CharCategory::Emoji => emoji_family.clone(),
-            CharCategory::Unicode => unicode_family.clone(),
-        }
-    };
-
-    let mut current = String::new();
-    let mut current_cat = CharCategory::WinAnsi;
-
-    for ch in run.text.chars() {
-        let cat = categorize(ch);
-        if cat != current_cat && !current.is_empty() {
-            runs.push(TextRun {
-                text: std::mem::take(&mut current),
-                font_family: family_for(current_cat),
-                ..run.clone()
-            });
-        }
-        current_cat = cat;
-        current.push(ch);
-    }
-
-    if !current.is_empty() {
-        runs.push(TextRun {
-            text: current,
-            font_family: family_for(current_cat),
-            ..run
-        });
-    }
-}
-
-fn collect_text_runs(
-    nodes: &[DomNode],
-    parent_style: &ComputedStyle,
-    runs: &mut Vec<TextRun>,
-    link_url: Option<&str>,
-    rules: &[CssRule],
-    fonts: &HashMap<String, TtfFont>,
-    ancestors: &[AncestorInfo],
-) {
-    collect_text_runs_inner(
-        nodes,
-        parent_style,
-        runs,
-        link_url,
-        rules,
-        fonts,
-        false,
-        ancestors,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn collect_text_runs_inner(
-    nodes: &[DomNode],
-    parent_style: &ComputedStyle,
-    runs: &mut Vec<TextRun>,
-    link_url: Option<&str>,
-    rules: &[CssRule],
-    fonts: &HashMap<String, TtfFont>,
-    inline_parent: bool,
-    ancestors: &[AncestorInfo],
-) {
-    let preserve_ws = matches!(
-        parent_style.white_space,
-        WhiteSpace::Pre | WhiteSpace::PreWrap
-    );
-
-    for node in nodes {
-        match node {
-            DomNode::Text(text) => {
-                let processed = if preserve_ws {
-                    // In pre/pre-wrap: preserve newlines as \n runs for line breaking
-                    text.clone()
-                } else {
-                    collapse_whitespace(text)
-                };
-                // Apply CSS text-transform
-                let processed = match parent_style.text_transform {
-                    crate::style::computed::TextTransform::Uppercase => processed.to_uppercase(),
-                    crate::style::computed::TextTransform::Lowercase => processed.to_lowercase(),
-                    crate::style::computed::TextTransform::Capitalize => {
-                        let mut result = String::with_capacity(processed.len());
-                        let mut prev_is_space = true;
-                        for c in processed.chars() {
-                            if prev_is_space && c.is_alphabetic() {
-                                for uc in c.to_uppercase() {
-                                    result.push(uc);
-                                }
-                            } else {
-                                result.push(c);
-                            }
-                            prev_is_space = c.is_whitespace();
-                        }
-                        result
-                    }
-                    crate::style::computed::TextTransform::None => processed,
-                };
-                if !processed.is_empty() {
-                    // Only propagate background_color when the immediate
-                    // parent is an inline element (e.g. <span>).  Block-level
-                    // backgrounds are drawn by the TextBlock itself.
-                    // In preformatted blocks (<pre>), skip inline backgrounds
-                    // to avoid overlapping rects that hide subsequent lines.
-                    let (bg, pad, br) = if inline_parent && !preserve_ws {
-                        (
-                            parent_style.background_color.map(|c| c.to_f32_rgba()),
-                            (parent_style.padding.left, parent_style.padding.top),
-                            parent_style.border_radius,
-                        )
-                    } else {
-                        (None, (0.0, 0.0), 0.0)
-                    };
-                    push_text_run_with_fallback(
-                        TextRun {
-                            text: processed,
-                            font_size: parent_style.font_size,
-                            bold: parent_style.font_weight == FontWeight::Bold,
-                            italic: parent_style.font_style == FontStyle::Italic,
-                            underline: parent_style.text_decoration_underline,
-                            line_through: parent_style.text_decoration_line_through,
-                            color: parent_style.color.to_f32_rgb(),
-                            link_url: link_url.map(String::from),
-                            font_family: resolve_style_font_family(parent_style, fonts),
-                            background_color: bg,
-                            padding: pad,
-                            border_radius: br,
-                        },
-                        runs,
-                        fonts,
-                    );
-                }
-            }
-            DomNode::Element(el) => {
-                if collects_as_inline_text(el.tag) || el.tag == HtmlTag::Br {
-                    if el.tag == HtmlTag::Br {
-                        runs.push(TextRun {
-                            text: "\n".to_string(),
-                            font_size: parent_style.font_size,
-                            bold: false,
-                            italic: false,
-                            underline: false,
-                            line_through: false,
-                            color: (0.0, 0.0, 0.0),
-                            link_url: None,
-                            font_family: resolve_style_font_family(parent_style, fonts),
-                            background_color: None,
-                            padding: (0.0, 0.0),
-                            border_radius: 0.0,
-                        });
-                    } else if el.attributes.contains_key("data-math") {
-                        // Skip math elements — they are rendered as MathBlock
-                        // by flatten_element, not as inline text runs.
-                    } else {
-                        let classes = el.class_list();
-                        let selector_ctx = SelectorContext {
-                            ancestors: ancestors.to_vec(),
-                            child_index: 0,
-                            sibling_count: nodes.len(),
-                            preceding_siblings: Vec::new(),
-                        };
-                        let style = compute_style_with_context(
-                            el.tag,
-                            el.style_attr(),
-                            parent_style,
-                            rules,
-                            el.tag_name(),
-                            &classes,
-                            el.id(),
-                            &el.attributes,
-                            &selector_ctx,
-                        );
-                        let url = if el.tag == HtmlTag::A {
-                            el.attributes.get("href").map(|s| s.as_str()).or(link_url)
-                        } else {
-                            link_url
-                        };
-                        collect_text_runs_inner(
-                            &el.children,
-                            &style,
-                            runs,
-                            url,
-                            rules,
-                            fonts,
-                            true,
-                            ancestors,
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn collect_table_cell_content_inner(
-    nodes: &[DomNode],
-    parent_style: &ComputedStyle,
-    runs: &mut Vec<TextRun>,
-    nested_rows: &mut Vec<LayoutElement>,
-    link_url: Option<&str>,
-    rules: &[CssRule],
-    fonts: &HashMap<String, TtfFont>,
-    inline_parent: bool,
-    recurse_blocks: bool,
-    suppress_direct_text_padding: bool,
-    ancestors: &[AncestorInfo],
-    available_width: f32,
-    counter_state: &mut CounterState,
-) {
-    let preserve_ws = matches!(
-        parent_style.white_space,
-        WhiteSpace::Pre | WhiteSpace::PreWrap
-    );
-    let element_sibling_count = nodes
-        .iter()
-        .filter(|node| matches!(node, DomNode::Element(_)))
-        .count();
-
-    for (node_index, node) in nodes.iter().enumerate() {
-        match node {
-            DomNode::Text(text) => {
-                let processed = if preserve_ws {
-                    text.clone()
-                } else {
-                    collapse_whitespace(text)
-                };
-                // Apply CSS text-transform
-                let processed = match parent_style.text_transform {
-                    crate::style::computed::TextTransform::Uppercase => processed.to_uppercase(),
-                    crate::style::computed::TextTransform::Lowercase => processed.to_lowercase(),
-                    crate::style::computed::TextTransform::Capitalize => {
-                        let mut result = String::with_capacity(processed.len());
-                        let mut prev_is_space = true;
-                        for c in processed.chars() {
-                            if prev_is_space && c.is_alphabetic() {
-                                for uc in c.to_uppercase() {
-                                    result.push(uc);
-                                }
-                            } else {
-                                result.push(c);
-                            }
-                            prev_is_space = c.is_whitespace();
-                        }
-                        result
-                    }
-                    crate::style::computed::TextTransform::None => processed,
-                };
-                if !processed.is_empty() {
-                    let (bg, pad, br) = if (inline_parent || recurse_blocks) && !preserve_ws {
-                        let pad = if suppress_direct_text_padding {
-                            (0.0, 0.0)
-                        } else {
-                            (parent_style.padding.left, parent_style.padding.top)
-                        };
-                        (
-                            parent_style.background_color.map(|c| c.to_f32_rgba()),
-                            pad,
-                            parent_style.border_radius,
-                        )
-                    } else {
-                        (None, (0.0, 0.0), 0.0)
-                    };
-                    push_text_run(
-                        runs,
-                        TextRun {
-                            text: processed,
-                            font_size: parent_style.font_size,
-                            bold: parent_style.font_weight == FontWeight::Bold,
-                            italic: parent_style.font_style == FontStyle::Italic,
-                            underline: parent_style.text_decoration_underline,
-                            line_through: parent_style.text_decoration_line_through,
-                            color: parent_style.color.to_f32_rgb(),
-                            link_url: link_url.map(String::from),
-                            font_family: resolve_style_font_family(parent_style, fonts),
-                            background_color: bg,
-                            padding: pad,
-                            border_radius: br,
-                        },
-                    );
-                }
-            }
-            DomNode::Element(el) => {
-                let child_index = nodes[..node_index]
-                    .iter()
-                    .filter(|node| matches!(node, DomNode::Element(_)))
-                    .count();
-                let preceding_siblings = nodes[..node_index]
-                    .iter()
-                    .filter_map(|node| match node {
-                        DomNode::Element(element) => Some((
-                            element.tag_name().to_string(),
-                            element
-                                .class_list()
-                                .into_iter()
-                                .map(str::to_string)
-                                .collect(),
-                        )),
-                        _ => None,
-                    })
-                    .collect();
-                let classes = el.class_list();
-                let selector_ctx = SelectorContext {
-                    ancestors: ancestors.to_vec(),
-                    child_index,
-                    sibling_count: element_sibling_count,
-                    preceding_siblings,
-                };
-                let style = compute_style_with_context(
-                    el.tag,
-                    el.style_attr(),
-                    parent_style,
-                    rules,
-                    el.tag_name(),
-                    &classes,
-                    el.id(),
-                    &el.attributes,
-                    &selector_ctx,
-                );
-                if style.display == Display::None {
-                    continue;
-                }
-                let url = if el.tag == HtmlTag::A {
-                    el.attributes.get("href").map(|s| s.as_str()).or(link_url)
-                } else {
-                    link_url
-                };
-                let mut child_ancestors = ancestors.to_vec();
-                child_ancestors.push(AncestorInfo {
-                    element: el,
-                    child_index,
-                    sibling_count: element_sibling_count,
-                    preceding_siblings: Vec::new(),
-                });
-                if el.tag == HtmlTag::Table {
-                    flatten_table(
-                        el,
-                        &style,
-                        available_width,
-                        nested_rows,
-                        rules,
-                        fonts,
-                        &child_ancestors,
-                        child_index,
-                        element_sibling_count,
-                        counter_state,
-                    );
-                } else if el.tag == HtmlTag::Svg
-                    || (recurse_blocks
-                        && style.display != Display::Inline
-                        && el.tag != HtmlTag::Br
-                        && el.children.is_empty()
-                        && (has_background_paint(&style)
-                            || style.border.has_any()
-                            || style.box_shadow.is_some()
-                            || style.aspect_ratio.is_some()
-                            || style.height.is_some()
-                            || style.width.is_some()))
-                {
-                    flatten_element(
-                        el,
-                        parent_style,
-                        available_width,
-                        f32::INFINITY,
-                        nested_rows,
-                        None,
-                        rules,
-                        ancestors,
-                        0,
-                        child_index,
-                        element_sibling_count,
-                        &selector_ctx.preceding_siblings,
-                        fonts,
-                        None,
-                        counter_state,
-                    );
-                } else if recurse_blocks || collects_as_inline_text(el.tag) || el.tag == HtmlTag::Br
-                {
-                    if el.tag == HtmlTag::Br {
-                        push_line_break_run(runs, parent_style, fonts);
-                    } else {
-                        collect_table_cell_content_inner(
-                            &el.children,
-                            &style,
-                            runs,
-                            nested_rows,
-                            url,
-                            rules,
-                            fonts,
-                            collects_as_inline_text(el.tag),
-                            recurse_blocks,
-                            false,
-                            &child_ancestors,
-                            available_width,
-                            counter_state,
-                        );
-                        if recurse_blocks && style.display != Display::Inline && !runs.is_empty() {
-                            push_line_break_run(runs, &style, fonts);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn push_text_run(runs: &mut Vec<TextRun>, run: TextRun) {
-    runs.push(run);
-}
-
-fn push_line_break_run(
-    runs: &mut Vec<TextRun>,
-    style: &ComputedStyle,
-    fonts: &HashMap<String, TtfFont>,
-) {
-    push_text_run(
-        runs,
-        TextRun {
-            text: "\n".to_string(),
-            font_size: style.font_size,
-            bold: false,
-            italic: false,
-            underline: false,
-            line_through: false,
-            color: (0.0, 0.0, 0.0),
-            link_url: None,
-            font_family: resolve_style_font_family(style, fonts),
-            background_color: None,
-            padding: (0.0, 0.0),
-            border_radius: 0.0,
-        },
-    );
-}
-/// Estimate the width of a word given its font settings and available custom fonts.
-fn estimate_word_width(
-    word: &str,
-    font_size: f32,
-    font_family: &FontFamily,
-    bold: bool,
-    italic: bool,
-    fonts: &HashMap<String, TtfFont>,
-) -> f32 {
-    if let Some(width) =
-        crate::text::measure_text_width(word, font_size, font_family, bold, italic, fonts)
-    {
-        return width;
-    }
-
-    // Use AFM metrics for standard fonts (non-bold for layout estimation)
-    crate::fonts::str_width(word, font_size, font_family, false)
-}
-
-#[derive(Clone, Copy)]
-struct TextWrapOptions {
-    max_width: f32,
-    default_font_size: f32,
-    line_height_factor: f32,
-    overflow_wrap: OverflowWrap,
-}
-
-impl TextWrapOptions {
-    const fn new(
-        max_width: f32,
-        default_font_size: f32,
-        line_height_factor: f32,
-        overflow_wrap: OverflowWrap,
-    ) -> Self {
-        Self {
-            max_width,
-            default_font_size,
-            line_height_factor,
-            overflow_wrap,
-        }
-    }
-}
-
-/// Split a long word at the last character boundary that still fits within
-/// `available_width`, without inserting hyphen characters.
-fn split_word_to_fit(
-    word: &str,
-    available_width: f32,
-    font_size: f32,
-    font_family: &FontFamily,
-    bold: bool,
-    italic: bool,
-    fonts: &HashMap<String, TtfFont>,
-) -> Option<(String, String)> {
-    if word.is_empty() || available_width <= 0.0 {
-        return None;
-    }
-
-    let mut best_boundary = None;
-    for (index, _) in word.char_indices().skip(1) {
-        let prefix = &word[..index];
-        let prefix_width = estimate_word_width(prefix, font_size, font_family, bold, italic, fonts);
-        if prefix_width <= available_width {
-            best_boundary = Some(index);
-        } else {
-            break;
-        }
-    }
-
-    let boundary = best_boundary?;
-    Some((word[..boundary].to_string(), word[boundary..].to_string()))
-}
-
-/// Simple text wrapping using character width estimation.
-/// Uses TTF metrics when a custom font is available.
-fn wrap_text_runs(
-    runs: Vec<TextRun>,
-    options: TextWrapOptions,
-    fonts: &HashMap<String, TtfFont>,
-) -> Vec<TextLine> {
-    let line_height_factor = options.line_height_factor.max(0.0);
-    let mut lines: Vec<TextLine> = Vec::new();
-    let mut current_runs: Vec<TextRun> = Vec::new();
-    let mut current_width: f32 = 0.0;
-    let mut line_height = options.default_font_size * line_height_factor;
-
-    // Apply BiDi reordering if the text contains RTL characters.
-    // This reorders runs into visual order so RTL segments display correctly
-    // in the left-to-right PDF rendering context.
-    let full_text: String = runs.iter().map(|r| r.text.as_str()).collect();
-    let runs = if crate::bidi::has_rtl_chars(&full_text) {
-        crate::bidi::reorder_runs_bidi(&runs, false)
-    } else {
-        runs
-    };
-
-    // Concatenate all text then re-split by words, preserving run styles.
-    // For text containing \n (white-space: pre), split on newlines first,
-    // then split each segment by words.
-    let mut styled_words: Vec<(String, TextRun, bool)> = Vec::new();
-    for run in &runs {
-        if run.text == "\n" {
-            styled_words.push(("\n".to_string(), run.clone(), false));
-            continue;
-        }
-        let has_newlines = run.text.contains('\n');
-        let has_preserved_spacing = run.text.chars().next().is_some_and(char::is_whitespace)
-            || run.text.chars().last().is_some_and(char::is_whitespace)
-            || run.text.contains("  ");
-        if has_newlines {
-            for (seg_idx, segment) in run.text.split('\n').enumerate() {
-                if seg_idx > 0 {
-                    styled_words.push(("\n".to_string(), run.clone(), false));
-                }
-                if segment.is_empty() {
-                    continue;
-                }
-                if segment.chars().next().is_some_and(char::is_whitespace)
-                    || segment.chars().last().is_some_and(char::is_whitespace)
-                    || segment.contains("  ")
-                {
-                    styled_words.push((segment.to_string(), run.clone(), true));
-                } else {
-                    for word in segment.split_whitespace() {
-                        styled_words.push((word.to_string(), run.clone(), false));
-                    }
-                }
-            }
-        } else if has_preserved_spacing {
-            styled_words.push((run.text.clone(), run.clone(), true));
-        } else {
-            for word in run.text.split_whitespace() {
-                styled_words.push((word.to_string(), run.clone(), false));
-            }
-        }
-    }
-
-    if styled_words.is_empty() && !runs.is_empty() {
-        return vec![TextLine {
-            runs,
-            height: line_height,
-        }];
-    }
-
-    // Use a VecDeque so hyphenation remainders can be re-queued for processing.
-    let mut queue: std::collections::VecDeque<(String, TextRun, bool)> =
-        styled_words.into_iter().collect();
-
-    while let Some((word, template, preserve_spacing)) = queue.pop_front() {
-        if word == "\n" {
-            // Line break
-            lines.push(TextLine {
-                runs: std::mem::take(&mut current_runs),
-                height: line_height,
-            });
-            current_width = 0.0;
-            line_height = options.default_font_size * line_height_factor;
-            continue;
-        }
-
-        let word_width = estimate_word_width(
-            &word,
-            template.font_size,
-            &template.font_family,
-            template.bold,
-            template.italic,
-            fonts,
-        );
-        let space_width = estimate_word_width(
-            " ",
-            template.font_size,
-            &template.font_family,
-            template.bold,
-            template.italic,
-            fonts,
-        );
-
-        let needed = if current_width > 0.0 && !preserve_spacing {
-            space_width + word_width
-        } else {
-            word_width
-        };
-
-        let overflows = current_width + needed > options.max_width;
-
-        if overflows && !preserve_spacing && options.overflow_wrap != OverflowWrap::Normal {
-            let available_width = if current_width > 0.0 {
-                options.max_width - current_width - space_width
-            } else {
-                options.max_width
-            };
-            if let Some((prefix, remainder)) = split_word_to_fit(
-                &word,
-                available_width,
-                template.font_size,
-                &template.font_family,
-                template.bold,
-                template.italic,
-                fonts,
-            ) {
-                let prefix_text = if current_width > 0.0 {
-                    format!(" {prefix}")
-                } else {
-                    prefix
-                };
-                line_height = line_height.max(template.font_size * line_height_factor);
-                current_runs.push(TextRun {
-                    text: prefix_text,
-                    ..template.clone()
-                });
-
-                lines.push(TextLine {
-                    runs: std::mem::take(&mut current_runs),
-                    height: line_height,
-                });
-                current_width = 0.0;
-                line_height = options.default_font_size * line_height_factor;
-                queue.push_front((remainder, template, false));
-                continue;
-            }
-        }
-
-        if overflows && current_width > 0.0 {
-            lines.push(TextLine {
-                runs: std::mem::take(&mut current_runs),
-                height: line_height,
-            });
-            current_width = 0.0;
-            line_height = options.default_font_size * line_height_factor;
-        }
-
-        let text = if current_width > 0.0 && !preserve_spacing {
-            format!(" {word}")
-        } else {
-            word
-        };
-
-        let w = estimate_word_width(
-            &text,
-            template.font_size,
-            &template.font_family,
-            template.bold,
-            template.italic,
-            fonts,
-        );
-        current_width += w;
-        line_height = line_height.max(template.font_size * line_height_factor);
-
-        current_runs.push(TextRun { text, ..template });
-    }
-
-    if !current_runs.is_empty() {
-        lines.push(TextLine {
-            runs: current_runs,
-            height: line_height,
-        });
-    }
-
-    lines
-}
-
-/// Apply text-overflow: ellipsis by truncating lines and appending "...".
-fn apply_text_overflow_ellipsis(
-    lines: &mut Vec<TextLine>,
-    max_width: f32,
-    fonts: &HashMap<String, TtfFont>,
-) {
-    // With nowrap, there should be only one line. Truncate it if it overflows.
-    if lines.is_empty() {
-        return;
-    }
-    // Merge all runs into a single string, keeping the style of the first run.
-    let line = &lines[0];
-    let total_text: String = line.runs.iter().map(|r| r.text.as_str()).collect();
-    if line.runs.is_empty() {
-        return;
-    }
-    let template = line.runs[0].clone();
-    let ellipsis = "...";
-    let ellipsis_width = estimate_word_width(
-        ellipsis,
-        template.font_size,
-        &template.font_family,
-        template.bold,
-        template.italic,
-        fonts,
-    );
-
-    // Check if the line actually overflows
-    let line_width = estimate_word_width(
-        &total_text,
-        template.font_size,
-        &template.font_family,
-        template.bold,
-        template.italic,
-        fonts,
-    );
-    if line_width <= max_width {
-        return;
-    }
-
-    // Truncate character by character until text + ellipsis fits
-    let mut truncated = String::new();
-    for ch in total_text.chars() {
-        truncated.push(ch);
-        let w = estimate_word_width(
-            &truncated,
-            template.font_size,
-            &template.font_family,
-            template.bold,
-            template.italic,
-            fonts,
-        );
-        if w + ellipsis_width > max_width {
-            truncated.pop();
-            break;
-        }
-    }
-    truncated.push_str(ellipsis);
-
-    lines[0] = TextLine {
-        runs: vec![TextRun {
-            text: truncated,
-            ..template
-        }],
-        height: line.height,
-    };
-
-    // Remove any additional lines (shouldn't exist with nowrap, but just in case)
-    lines.truncate(1);
-}
-
-/// Resolve the containing block for an element that is `position: absolute`.
-/// If the element is absolute and `abs_cb` is `Some`, returns `abs_cb` and
-/// resolves bottom/right offsets into top/left. Otherwise returns `None`
-/// and leaves offsets unchanged.
-fn resolve_abs_containing_block(
-    style: &ComputedStyle,
-    abs_cb: Option<ContainingBlock>,
-    elem_height: f32,
-    elem_width: f32,
-) -> (Option<ContainingBlock>, f32, f32) {
-    if style.position != Position::Absolute {
-        return (None, style.top.unwrap_or(0.0), style.left.unwrap_or(0.0));
-    }
-    let cb = match abs_cb {
-        Some(cb) => cb,
-        None => return (None, style.top.unwrap_or(0.0), style.left.unwrap_or(0.0)),
-    };
-
-    let top_from_percent = style.percentage_insets.top.map(|p| cb.height * p / 100.0);
-    let bottom_from_percent = style
-        .percentage_insets
-        .bottom
-        .map(|p| cb.height * p / 100.0);
-    let left_from_percent = style.percentage_insets.left.map(|p| cb.width * p / 100.0);
-    let right_from_percent = style.percentage_insets.right.map(|p| cb.width * p / 100.0);
-
-    let resolved_top = if let Some(top) = top_from_percent.or(style.top) {
-        top
-    } else if let Some(bottom) = bottom_from_percent.or(style.bottom) {
-        cb.height - elem_height - bottom
-    } else {
-        0.0
-    };
-    let resolved_left = if let Some(left) = left_from_percent.or(style.left) {
-        left
-    } else if let Some(right) = right_from_percent.or(style.right) {
-        cb.width - elem_width - right
-    } else {
-        0.0
-    };
-
-    (Some(cb), resolved_top, resolved_left)
-}
-
-/// Patch absolute-positioned children in a flattened element list with
-/// the parent's containing block info. This resolves bottom/right offsets
-/// into top/left and sets the `containing_block` field.
-fn patch_absolute_children_containing_block(elements: &mut [LayoutElement], cb: ContainingBlock) {
-    for element in elements.iter_mut() {
-        if let LayoutElement::TextBlock {
-            position,
-            containing_block,
-            offset_top,
-            offset_left,
-            offset_bottom,
-            offset_right,
-            block_width,
-            block_height,
-            lines,
-            padding_top,
-            padding_bottom,
-            padding_left: _,
-            padding_right: _,
-            border,
-            ..
-        } = element
-        {
-            if *position == Position::Absolute && containing_block.is_none() {
-                // Compute element dimensions for right/bottom resolution
-                let text_h: f32 = lines.iter().map(|l| l.height).sum();
-                let elem_h = block_height
-                    .unwrap_or(*padding_top + text_h + *padding_bottom + border.vertical_width());
-                let elem_w = block_width.unwrap_or(0.0);
-
-                // Resolve right → left
-                if *offset_left == 0.0 && *offset_right > 0.0 {
-                    *offset_left = cb.width - elem_w - *offset_right;
-                }
-                // Resolve bottom → top
-                if *offset_top == 0.0 && *offset_bottom > 0.0 {
-                    *offset_top = cb.height - elem_h - *offset_bottom;
-                }
-
-                *containing_block = Some(cb);
-            }
-        }
-    }
-}
-
-/// A tracked float region for simplified float layout.
-#[derive(Debug, Clone)]
-struct FloatRegion {
-    #[allow(dead_code)]
-    y_start: f32,
-    y_end: f32,
-    #[allow(dead_code)]
-    side: Float,
-}
-
-/// Estimate the height of a layout element for wrapper sizing.
-pub(crate) fn estimate_element_height(element: &LayoutElement) -> f32 {
-    estimate_element_height_bounded(element, 50)
-}
-
-fn estimate_element_height_bounded(element: &LayoutElement, depth: usize) -> f32 {
-    if depth == 0 {
-        return 0.0;
-    }
-    match element {
-        LayoutElement::TextBlock {
-            lines,
-            margin_top,
-            margin_bottom,
-            padding_top,
-            padding_bottom,
-            border,
-            block_height,
-            position,
-            clip_rect,
-            ..
-        } => {
-            if *position == Position::Absolute {
-                return 0.0;
-            }
-            let text_height: f32 = lines.iter().map(|l| l.height).sum();
-            let content_h = padding_top + text_height + padding_bottom;
-            // When clipping (overflow:hidden), use the specified block_height
-            // instead of expanding to fit content.
-            let effective_h = if clip_rect.is_some() {
-                block_height.unwrap_or(content_h)
-            } else {
-                block_height.map_or(content_h, |h| content_h.max(h))
-            };
-            margin_top + effective_h + margin_bottom + border.vertical_width()
-        }
-        LayoutElement::FlexRow {
-            row_height,
-            margin_top,
-            margin_bottom,
-            padding_top,
-            padding_bottom,
-            border,
-            ..
-        } => {
-            margin_top
-                + padding_top
-                + row_height
-                + padding_bottom
-                + margin_bottom
-                + border.vertical_width()
-        }
-        LayoutElement::TableRow {
-            cells,
-            margin_top,
-            margin_bottom,
-            ..
-        } => {
-            let row_h = cells
-                .iter()
-                .map(table_cell_content_height)
-                .fold(0.0f32, f32::max);
-            margin_top + row_h + margin_bottom
-        }
-        LayoutElement::GridRow {
-            cells,
-            margin_top,
-            margin_bottom,
-            padding_top,
-            padding_bottom,
-            ..
-        } => {
-            let row_h = cells
-                .iter()
-                .map(table_cell_content_height)
-                .fold(0.0f32, f32::max);
-            margin_top + padding_top + row_h + padding_bottom + margin_bottom
-        }
-        LayoutElement::Image {
-            height,
-            flow_extra_bottom,
-            margin_top,
-            margin_bottom,
-            ..
-        } => margin_top + height + flow_extra_bottom + margin_bottom,
-        LayoutElement::HorizontalRule {
-            margin_top,
-            margin_bottom,
-        } => margin_top + 1.0 + margin_bottom,
-        LayoutElement::ProgressBar {
-            height,
-            margin_top,
-            margin_bottom,
-            ..
-        } => margin_top + height + margin_bottom,
-        LayoutElement::Svg {
-            height,
-            flow_extra_bottom,
-            margin_top,
-            margin_bottom,
-            ..
-        } => margin_top + height + flow_extra_bottom + margin_bottom,
-        LayoutElement::MathBlock {
-            layout,
-            margin_top,
-            margin_bottom,
-            ..
-        } => margin_top + layout.height() + margin_bottom,
-        LayoutElement::Container {
-            children,
-            padding_top,
-            padding_bottom,
-            border,
-            margin_top,
-            margin_bottom,
-            block_height,
-            ..
-        } => {
-            let children_h: f32 = children
-                .iter()
-                .map(|c| estimate_element_height_bounded(c, depth - 1))
-                .sum();
-            let content_h = padding_top + children_h + padding_bottom + border.vertical_width();
-            let effective_h = block_height.map_or(content_h, |h| content_h.max(h));
-            margin_top + effective_h + margin_bottom
-        }
-        _ => 0.0,
-    }
-}
-
-fn table_row_content_width(element: &LayoutElement) -> f32 {
-    match element {
-        LayoutElement::TableRow {
-            col_widths,
-            border_collapse,
-            border_spacing,
-            ..
-        } => {
-            let spacing = if *border_collapse == BorderCollapse::Collapse {
-                0.0
-            } else {
-                *border_spacing
-            };
-            col_widths.iter().sum::<f32>() + spacing * col_widths.len().saturating_sub(1) as f32
-        }
-        _ => 0.0,
-    }
-}
-
-fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec<Page> {
-    let mut pages: Vec<Page> = Vec::new();
-    let mut current_elements: Vec<(f32, LayoutElement)> = Vec::new();
-    let mut y = 0.0;
-
-    // Track active float regions for simplified float/clear behavior
-    let mut left_floats: Vec<FloatRegion> = Vec::new();
-    let mut right_floats: Vec<FloatRegion> = Vec::new();
-    let mut prev_margin_bottom: f32 = 0.0;
-
-    // Collect synthetic full-page background elements that should be repeated
-    // across every page during pagination.
-    let mut absolute_backgrounds: Vec<(f32, LayoutElement)> = Vec::new();
-    // Track the y-position of positioned ancestors by depth so absolute descendants
-    // resolve against the nearest positioned ancestor rather than the most recent one.
-    let mut positioned_y_by_depth: HashMap<usize, f32> = HashMap::new();
-
-    for element in elements {
-        // Extract float/clear/position info from TextBlock elements
-        let (
-            elem_float,
-            elem_clear,
-            elem_position,
-            elem_offset_top,
-            _elem_offset_bottom,
-            elem_containing_block,
-            elem_positioned_depth,
-        ) = match &element {
-            LayoutElement::TextBlock {
-                float,
-                clear,
-                position,
-                offset_top,
-                offset_bottom,
-                containing_block,
-                positioned_depth,
-                ..
-            } => (
-                *float,
-                *clear,
-                *position,
-                *offset_top,
-                *offset_bottom,
-                *containing_block,
-                *positioned_depth,
-            ),
-            _ => (
-                Float::None,
-                Clear::None,
-                Position::Static,
-                0.0,
-                0.0,
-                None,
-                0,
-            ),
-        };
-
-        // Handle clear: move y below active floats on the specified side
-        match elem_clear {
-            Clear::Left | Clear::Both => {
-                for f in &left_floats {
-                    if f.y_end > y {
-                        y = f.y_end;
-                    }
-                }
-                if elem_clear == Clear::Both {
-                    for f in &right_floats {
-                        if f.y_end > y {
-                            y = f.y_end;
-                        }
-                    }
-                }
-            }
-            Clear::Right => {
-                for f in &right_floats {
-                    if f.y_end > y {
-                        y = f.y_end;
-                    }
-                }
-            }
-            Clear::None => {}
-        }
-
-        // Returns (content_height_without_margins, margin_top, margin_bottom)
-        let (content_h_val, margin_top_val, margin_bottom_val) = match &element {
-            LayoutElement::PageBreak => {
-                let consumed_height = y;
-                pages.push(Page {
-                    elements: std::mem::take(&mut current_elements),
-                });
-                // Duplicate root background onto the new page.
-                for bg in &absolute_backgrounds {
-                    current_elements.push(bg.clone());
-                }
-                y = 0.0;
-                prev_margin_bottom = 0.0;
-                left_floats.clear();
-                right_floats.clear();
-                advance_positioned_ancestors_after_page_break(
-                    &mut positioned_y_by_depth,
-                    consumed_height,
-                );
-                continue;
-            }
-            LayoutElement::HorizontalRule {
-                margin_top,
-                margin_bottom,
-            } => (1.0, *margin_top, *margin_bottom),
-            LayoutElement::TableRow {
-                cells,
-                margin_top,
-                margin_bottom,
-                ..
-            } => {
-                let row_height = cells
-                    .iter()
-                    .map(table_cell_content_height)
-                    .fold(0.0f32, f32::max);
-                (row_height, *margin_top, *margin_bottom)
-            }
-            LayoutElement::GridRow {
-                cells,
-                margin_top,
-                margin_bottom,
-                ..
-            } => {
-                let row_height = cells
-                    .iter()
-                    .map(table_cell_content_height)
-                    .fold(0.0f32, f32::max);
-                (row_height, *margin_top, *margin_bottom)
-            }
-            LayoutElement::FlexRow {
-                row_height,
-                margin_top,
-                margin_bottom,
-                padding_top,
-                padding_bottom,
-                border,
-                ..
-            } => {
-                let content = padding_top + row_height + padding_bottom + border.vertical_width();
-                (content, *margin_top, *margin_bottom)
-            }
-            LayoutElement::TextBlock {
-                lines,
-                margin_top,
-                margin_bottom,
-                padding_top,
-                padding_bottom,
-                border,
-                block_height,
-                clip_rect,
-                ..
-            } => {
-                let text_height: f32 = lines.iter().map(|l| l.height).sum();
-                let border_extra = border.vertical_width();
-                let content_h = padding_top + text_height + padding_bottom;
-                let effective_content_h = if clip_rect.is_some() {
-                    // overflow:hidden — use specified height, don't expand
-                    block_height.unwrap_or(content_h)
-                } else {
-                    match block_height {
-                        Some(h) => content_h.max(*h),
-                        None => content_h,
-                    }
-                };
-                (
-                    effective_content_h + border_extra,
-                    *margin_top,
-                    *margin_bottom,
-                )
-            }
-            LayoutElement::Image {
-                height,
-                flow_extra_bottom,
-                margin_top,
-                margin_bottom,
-                ..
-            } => (*height + *flow_extra_bottom, *margin_top, *margin_bottom),
-            LayoutElement::Svg {
-                height,
-                flow_extra_bottom,
-                margin_top,
-                margin_bottom,
-                ..
-            } => (*height + *flow_extra_bottom, *margin_top, *margin_bottom),
-            LayoutElement::ProgressBar {
-                height,
-                margin_top,
-                margin_bottom,
-                ..
-            } => (*height, *margin_top, *margin_bottom),
-            LayoutElement::MathBlock {
-                layout,
-                margin_top,
-                margin_bottom,
-                ..
-            } => (layout.height(), *margin_top, *margin_bottom),
-            LayoutElement::Container {
-                children,
-                padding_top,
-                padding_bottom,
-                border,
-                margin_top,
-                margin_bottom,
-                block_height,
-                overflow,
-                ..
-            } => {
-                let children_h: f32 = children
-                    .iter()
-                    .map(|c| estimate_element_height_bounded(c, 50))
-                    .sum();
-                let content_h = padding_top + children_h + padding_bottom + border.vertical_width();
-                let effective_h = if *overflow == Overflow::Hidden {
-                    block_height.unwrap_or(content_h)
-                } else {
-                    block_height.map_or(content_h, |h| content_h.max(h))
-                };
-                (effective_h, *margin_top, *margin_bottom)
-            }
-        };
-
-        // Collapse margins: adjacent vertical margins merge (larger wins for positive,
-        // most negative for negative, sum for mixed).
-        let collapsed_margin = if margin_top_val >= 0.0 && prev_margin_bottom >= 0.0 {
-            margin_top_val.max(prev_margin_bottom)
-        } else if margin_top_val < 0.0 && prev_margin_bottom < 0.0 {
-            margin_top_val.min(prev_margin_bottom)
-        } else {
-            margin_top_val + prev_margin_bottom
-        };
-        let margin_top_val = collapsed_margin;
-        let element_height = margin_top_val + content_h_val + margin_bottom_val;
-
-        // Handle position: absolute -- place at fixed position, don't affect flow
-        if elem_position == Position::Absolute {
-            let abs_y = if let Some(cb) = elem_containing_block {
-                // Position relative to the containing block (nearest positioned ancestor).
-                // bottom/right offsets are pre-resolved into top/left in build_pseudo_block.
-                positioned_y_by_depth.get(&cb.depth).copied().unwrap_or(0.0) + elem_offset_top
-            } else {
-                // No containing block — position relative to page (legacy behavior).
-                elem_offset_top
-            };
-            if elem_positioned_depth > 0 {
-                positioned_y_by_depth.insert(elem_positioned_depth, abs_y);
-            }
-            let repeats_on_each_page = match &element {
-                LayoutElement::TextBlock {
-                    repeat_on_each_page,
-                    ..
-                } => *repeat_on_each_page,
-                _ => false,
-            };
-            if repeats_on_each_page {
-                absolute_backgrounds.push((abs_y, element.clone()));
-            }
-            current_elements.push((abs_y, element));
-            continue;
-        }
-
-        if y + element_height > content_height && y > 0.0 {
-            let consumed_height = y;
-            pages.push(Page {
-                elements: std::mem::take(&mut current_elements),
-            });
-            // Duplicate root background onto the new page.
-            for bg in &absolute_backgrounds {
-                current_elements.push(bg.clone());
-            }
-            y = 0.0;
-            prev_margin_bottom = 0.0;
-            left_floats.clear();
-            right_floats.clear();
-            advance_positioned_ancestors_after_page_break(
-                &mut positioned_y_by_depth,
-                consumed_height,
-            );
-        }
-
-        // After potential page break, recompute effective margin_top
-        // (on a fresh page, prev_margin_bottom is 0 so no collapsing needed).
-        let effective_margin_top = if prev_margin_bottom == 0.0 {
-            collapsed_margin
-        } else {
-            margin_top_val
-        };
-
-        // Handle floated elements (floats don't participate in margin collapsing)
-        if elem_float != Float::None {
-            y += effective_margin_top;
-            let float_y_end = y + content_h_val;
-            let region = FloatRegion {
-                y_start: y,
-                y_end: float_y_end,
-                side: elem_float,
-            };
-            if elem_float == Float::Left {
-                left_floats.push(region);
-            } else {
-                right_floats.push(region);
-            }
-            current_elements.push((y, element));
-            prev_margin_bottom = 0.0;
-            continue;
-        }
-
-        y += effective_margin_top;
-
-        // Handle position: relative -- offset from normal position
-        let effective_y = if elem_position == Position::Relative {
-            y + elem_offset_top
-        } else {
-            y
-        };
-
-        // Track positioned ancestor y for absolute children.
-        if elem_positioned_depth > 0
-            && (elem_position == Position::Relative || elem_position == Position::Absolute)
-        {
-            positioned_y_by_depth.insert(elem_positioned_depth, effective_y);
-        }
-
-        current_elements.push((effective_y, element));
-        y += content_h_val;
-        prev_margin_bottom = margin_bottom_val;
-    }
-
-    if !current_elements.is_empty() {
-        pages.push(Page {
-            elements: current_elements,
-        });
-    }
-
-    if pages.is_empty() {
-        pages.push(Page {
-            elements: Vec::new(),
-        });
-    }
-
-    // Sort elements within each page by z_index for correct rendering order.
-    // Static elements (z_index 0) stay in document order; positioned elements
-    // with higher z_index are moved later so they render on top.
-    for page in &mut pages {
-        page.elements
-            .sort_by_key(|(_, element)| layout_element_paint_order(element));
-    }
-
-    pages
-}
-
-/// Load raw bytes from a `src` attribute value.
-///
-/// Supports `data:` URIs (base64 and percent-encoded), local file paths, and
-/// HTTP/HTTPS URLs (gated behind the `remote` feature).
-///
-/// For data URIs the MIME header is returned so callers can use it to skip
-/// unnecessary probing (e.g. skip SVG probe when the MIME is `image/jpeg`).
-pub(crate) fn load_src_bytes(src: &str) -> Option<(Vec<u8>, Option<String>)> {
-    if let Some(rest) = src.strip_prefix("data:") {
-        let (header, encoded) = rest.split_once(',')?;
-        let header_lower = header.to_ascii_lowercase();
-        let bytes = if header_lower.contains("base64") {
-            decode_base64(encoded)?
-        } else {
-            // Plain-text or percent-encoded data URI — decode %XX sequences.
-            percent_decode(encoded).into_bytes()
-        };
-        let mime = if header_lower.is_empty() {
-            None
-        } else {
-            Some(header_lower)
-        };
-        Some((bytes, mime))
-    } else if src.starts_with("http://") || src.starts_with("https://") {
-        Some((fetch_remote_url(src)?, None))
-    } else {
-        Some((std::fs::read(src).ok()?, None))
-    }
-}
-
-/// Probe raw bytes for SVG content and parse into an `SvgTree`.
-///
-/// Uses a heuristic on the first 512 bytes (via `String::from_utf8_lossy` so
-/// that non-UTF-8 binary content is safely rejected) and then parses the full
-/// content through the HTML parser to extract the `<svg>` element.
-fn try_parse_svg_bytes(raw: &[u8]) -> Option<crate::parser::svg::SvgTree> {
-    // Heuristic: check if the content looks like SVG (XML with an <svg element).
-    let prefix = if raw.len() > 512 { &raw[..512] } else { raw };
-    let text = String::from_utf8_lossy(prefix);
-    let trimmed = text.trim_start_matches('\u{FEFF}').trim_start();
-    let trimmed_lower = trimmed.to_ascii_lowercase();
-    if !(trimmed.starts_with("<svg")
-        || trimmed.starts_with("<?xml")
-        || trimmed.starts_with("<!--")
-        || trimmed_lower.starts_with("<!doctype"))
-    {
-        return None;
-    }
-    // For the comment case, search the full content (comments may exceed the
-    // 512-byte prefix before the <svg> tag appears).
-    if trimmed.starts_with("<!--") {
-        let full_text = String::from_utf8_lossy(raw);
-        if !full_text.contains("<svg") {
-            return None;
-        }
-    }
-
-    // Parse the full SVG content — use lossy conversion so that stray non-UTF-8
-    // bytes don't cause the whole parse to fail.
-    let svg_str = String::from_utf8_lossy(raw);
-    crate::parser::svg::parse_svg_from_string(&svg_str)
-}
-
-/// Detect PNG/JPEG format and return a raster asset with source dimensions.
-fn load_image_bytes(raw: Vec<u8>) -> Option<RasterImageAsset> {
-    if png::is_png(&raw) {
-        let png_info = png::parse_png(&raw)?;
-        let metadata = PngMetadata {
-            channels: png_info.channels,
-            bit_depth: png_info.bit_depth,
-        };
-        Some(RasterImageAsset {
-            data: png_info.idat_data,
-            source_width: png_info.width,
-            source_height: png_info.height,
-            format: ImageFormat::Png,
-            png_metadata: Some(metadata),
-        })
-    } else if raw.starts_with(&[0xFF, 0xD8]) {
-        let (source_width, source_height) = crate::parser::jpeg::parse_jpeg_dimensions(&raw)?;
-        Some(RasterImageAsset {
-            data: raw,
-            source_width,
-            source_height,
-            format: ImageFormat::Jpeg,
-            png_metadata: None,
-        })
-    } else {
-        None
-    }
-}
-
-/// Load image data from an <img> element and return a LayoutElement.
-///
-/// Bytes are fetched exactly once from the source.  When the content is SVG it
-/// is parsed as vector graphics (`LayoutElement::Svg`); otherwise it falls back
-/// to raster PNG/JPEG (`LayoutElement::Image`).
-fn load_image_from_element(
-    el: &ElementNode,
-    available_width: f32,
-    available_height: f32,
-    style: &ComputedStyle,
-) -> Option<LayoutElement> {
-    let src = el.attributes.get("src")?;
-
-    // Load bytes once.
-    let (raw, mime) = load_src_bytes(src)?;
-
-    // For data URIs with a non-SVG MIME type, skip the SVG probe entirely.
-    let skip_svg = mime
-        .as_deref()
-        .is_some_and(|m| !m.is_empty() && !m.contains("svg") && !m.contains("xml"));
-
-    // Try SVG path first — render as vector graphics instead of raster.
-    if !skip_svg && let Some(mut tree) = try_parse_svg_bytes(&raw) {
-        let intrinsic = resolve_svg_size(&tree, available_width, available_height, false, false);
-        let html_attr_width = style
-            .width
-            .or_else(|| parse_html_image_dimension(el.attributes.get("width")));
-        let html_attr_height = style
-            .height
-            .or_else(|| parse_html_image_dimension(el.attributes.get("height")));
-
-        let (width, height) = match (html_attr_width, html_attr_height) {
-            (Some(w), Some(h)) => (w, h),
-            (Some(w), None) if intrinsic.0 > 0.0 => (w, intrinsic.1 * (w / intrinsic.0)),
-            (Some(w), None) => (w, intrinsic.1),
-            (None, Some(h)) if intrinsic.1 > 0.0 => (intrinsic.0 * (h / intrinsic.1), h),
-            (None, Some(h)) => (intrinsic.0, h),
-            (None, None) => intrinsic,
-        };
-
-        let (width, height) = constrain_replaced_image_size(
-            width,
-            height,
-            available_width,
-            style.max_width,
-            style.max_height,
-        );
-
-        sync_svg_tree_to_layout_box(&mut tree, width, height);
-        return Some(LayoutElement::Svg {
-            tree,
-            width,
-            height,
-            flow_extra_bottom: 0.0,
-            margin_top: style.margin.top,
-            margin_bottom: style.margin.bottom,
-        });
-    }
-
-    // Fall back to raster image using the same bytes.
-    let image = load_raster_image_bytes(raw, style.blur_radius)?;
-
-    // Determine dimensions from attributes
-    let attr_width = parse_html_image_dimension(el.attributes.get("width"));
-    let attr_height = parse_html_image_dimension(el.attributes.get("height"));
-
-    let (width, height) = match (attr_width, attr_height) {
-        (Some(w), Some(h)) => (w, h),
-        (Some(w), None) => (w, w), // fallback: square
-        (None, Some(h)) => (h, h),
-        (None, None) => (available_width.min(200.0), 150.0),
-    };
-
-    let (width, height) = constrain_replaced_image_size(
-        width,
-        height,
-        available_width,
-        style.max_width,
-        style.max_height,
-    );
-
-    Some(LayoutElement::Image {
-        image,
-        width,
-        height,
-        flow_extra_bottom: 0.0,
-        margin_top: style.margin.top,
-        margin_bottom: style.margin.bottom,
-    })
-}
-
-fn constrain_replaced_image_size(
-    width: f32,
-    height: f32,
-    available_width: f32,
-    max_width: Option<f32>,
-    max_height: Option<f32>,
-) -> (f32, f32) {
-    if width <= 0.0 || height <= 0.0 {
-        return (width.max(0.0), height.max(0.0));
-    }
-
-    let mut scale: f32 = 1.0;
-
-    if available_width.is_finite() && available_width > 0.0 {
-        scale = scale.min(available_width / width);
-    }
-
-    if let Some(limit) = max_width.filter(|limit| limit.is_finite() && *limit > 0.0) {
-        scale = scale.min(limit / width);
-    }
-
-    if let Some(limit) = max_height.filter(|limit| limit.is_finite() && *limit > 0.0) {
-        scale = scale.min(limit / height);
-    }
-
-    if scale < 1.0 {
-        (width * scale, height * scale)
-    } else {
-        (width, height)
-    }
-}
-
-fn add_inline_replaced_baseline_gap(
-    element: LayoutElement,
-    style: &ComputedStyle,
-    fonts: &HashMap<String, TtfFont>,
-) -> LayoutElement {
-    if style.display != Display::Inline || style.vertical_align != VerticalAlign::Baseline {
-        return element;
-    }
-
-    let font_family = resolve_style_font_family(style, fonts);
-    let (_, descender_ratio) = crate::fonts::font_metrics_ratios(
-        &font_family,
-        style.font_weight == FontWeight::Bold,
-        style.font_style == FontStyle::Italic,
-        fonts,
-    );
-    let baseline_gap = descender_ratio * style.font_size;
-    if baseline_gap <= 0.0 {
-        return element;
-    }
-
-    match element {
-        LayoutElement::Image {
-            image,
-            width,
-            height,
-            flow_extra_bottom,
-            margin_top,
-            margin_bottom,
-        } => LayoutElement::Image {
-            image,
-            width,
-            height,
-            flow_extra_bottom: flow_extra_bottom + baseline_gap,
-            margin_top,
-            margin_bottom,
-        },
-        LayoutElement::Svg {
-            tree,
-            width,
-            height,
-            flow_extra_bottom,
-            margin_top,
-            margin_bottom,
-        } => LayoutElement::Svg {
-            tree,
-            width,
-            height,
-            flow_extra_bottom: flow_extra_bottom + baseline_gap,
-            margin_top,
-            margin_bottom,
-        },
-        other => other,
-    }
-}
-
-fn parse_html_image_dimension(raw: Option<&String>) -> Option<f32> {
-    let raw = raw?.trim();
-    let raw = raw.strip_suffix("px").unwrap_or(raw);
-    raw.parse::<f32>().ok().map(|px| px * 0.75)
-}
-
-struct SvgSizeSource<'a> {
-    width_raw: Option<&'a str>,
-    height_raw: Option<&'a str>,
-    natural_width: Option<f32>,
-    natural_height: Option<f32>,
-    natural_ratio: Option<f32>,
-}
-
-impl<'a> SvgSizeSource<'a> {
-    fn from_tree(tree: &'a crate::parser::svg::SvgTree) -> Self {
-        let explicit_width = tree
-            .width_attr
-            .as_deref()
-            .and_then(crate::parser::svg::parse_absolute_length)
-            .filter(|width| *width > 0.0);
-        let explicit_height = tree
-            .height_attr
-            .as_deref()
-            .and_then(crate::parser::svg::parse_absolute_length)
-            .filter(|height| *height > 0.0);
-        let natural_width = explicit_width
-            .or_else(|| (tree.view_box.is_none() && tree.width > 0.0).then_some(tree.width));
-        let natural_height = explicit_height
-            .or_else(|| (tree.view_box.is_none() && tree.height > 0.0).then_some(tree.height));
-        Self {
-            width_raw: tree.width_attr.as_deref(),
-            height_raw: tree.height_attr.as_deref(),
-            natural_ratio: svg_natural_ratio(
-                explicit_width,
-                explicit_height,
-                natural_width,
-                natural_height,
-                tree.view_box,
-            ),
-            natural_width,
-            natural_height,
-        }
-    }
-
-    fn from_element(el: &'a ElementNode) -> Self {
-        let width_raw = el.attributes.get("width").map(String::as_str);
-        let height_raw = el.attributes.get("height").map(String::as_str);
-        let view_box = el
-            .attributes
-            .get("viewBox")
-            .and_then(|value| crate::parser::svg::parse_viewbox(value));
-        let natural_width = width_raw
-            .and_then(crate::parser::svg::parse_absolute_length)
-            .filter(|width| *width > 0.0);
-        let natural_height = height_raw
-            .and_then(crate::parser::svg::parse_absolute_length)
-            .filter(|height| *height > 0.0);
-
-        Self {
-            width_raw,
-            height_raw,
-            natural_width,
-            natural_height,
-            natural_ratio: svg_natural_ratio(
-                natural_width,
-                natural_height,
-                natural_width,
-                natural_height,
-                view_box,
-            ),
-        }
-    }
-
-    fn resolve(
-        self,
-        available_width: f32,
-        available_height: f32,
-        allow_percent_width: bool,
-        allow_percent_height: bool,
-    ) -> (f32, f32) {
-        const DEFAULT_OBJECT_WIDTH: f32 = 300.0;
-        const DEFAULT_OBJECT_HEIGHT: f32 = 150.0;
-        let width = resolve_svg_dimension(self.width_raw, available_width, allow_percent_width);
-        let height = resolve_svg_dimension(self.height_raw, available_height, allow_percent_height);
-
-        match (width, height) {
-            (Some(width), Some(height)) => (width, height),
-            (Some(width), None) => {
-                if let Some(ratio) = self.natural_ratio {
-                    (width, width * ratio)
-                } else {
-                    (width, self.natural_height.unwrap_or(DEFAULT_OBJECT_HEIGHT))
-                }
-            }
-            (None, Some(height)) => {
-                if let Some(ratio) = self.natural_ratio {
-                    (height / ratio.max(f32::EPSILON), height)
-                } else {
-                    (self.natural_width.unwrap_or(DEFAULT_OBJECT_WIDTH), height)
-                }
-            }
-            (None, None) => {
-                if let Some(width) = self.natural_width {
-                    if let Some(height) = self.natural_height {
-                        (width, height)
-                    } else if let Some(ratio) = self.natural_ratio {
-                        (width, width * ratio)
-                    } else {
-                        (width, DEFAULT_OBJECT_HEIGHT)
-                    }
-                } else if let Some(height) = self.natural_height {
-                    if let Some(ratio) = self.natural_ratio {
-                        (height / ratio.max(f32::EPSILON), height)
-                    } else {
-                        (DEFAULT_OBJECT_WIDTH, height)
-                    }
-                } else if let Some(ratio) = self.natural_ratio {
-                    contain_default_object_size(ratio)
-                } else {
-                    (DEFAULT_OBJECT_WIDTH, DEFAULT_OBJECT_HEIGHT)
-                }
-            }
-        }
-    }
-}
-
-fn svg_natural_ratio(
-    explicit_width: Option<f32>,
-    explicit_height: Option<f32>,
-    natural_width: Option<f32>,
-    natural_height: Option<f32>,
-    view_box: Option<crate::parser::svg::ViewBox>,
-) -> Option<f32> {
-    match (explicit_width, explicit_height) {
-        (Some(width), Some(height)) => Some(height / width.max(f32::EPSILON)),
-        _ => view_box
-            .and_then(|view_box| {
-                (view_box.width > 0.0 && view_box.height > 0.0)
-                    .then_some(view_box.height / view_box.width)
-            })
-            .or_else(|| match (natural_width, natural_height) {
-                (Some(width), Some(height)) => Some(height / width.max(f32::EPSILON)),
-                _ => None,
-            }),
-    }
-}
-
-fn contain_default_object_size(ratio: f32) -> (f32, f32) {
-    const DEFAULT_OBJECT_WIDTH: f32 = 300.0;
-    const DEFAULT_OBJECT_HEIGHT: f32 = 150.0;
-
-    let default_ratio = DEFAULT_OBJECT_HEIGHT / DEFAULT_OBJECT_WIDTH;
-    if ratio > default_ratio {
-        (DEFAULT_OBJECT_HEIGHT / ratio, DEFAULT_OBJECT_HEIGHT)
-    } else {
-        (DEFAULT_OBJECT_WIDTH, DEFAULT_OBJECT_WIDTH * ratio)
-    }
-}
-
-/// Resolve the rendered size of an SVG from its intrinsic dimensions and raw
-/// `width`/`height` attributes.
-fn resolve_svg_size(
-    tree: &crate::parser::svg::SvgTree,
-    available_width: f32,
-    available_height: f32,
-    allow_percent_width: bool,
-    allow_percent_height: bool,
-) -> (f32, f32) {
-    SvgSizeSource::from_tree(tree).resolve(
-        available_width,
-        available_height,
-        allow_percent_width,
-        allow_percent_height,
-    )
-}
-
-fn resolve_svg_element_size(
-    el: &ElementNode,
-    available_width: f32,
-    available_height: f32,
-    allow_percent_width: bool,
-    allow_percent_height: bool,
-) -> (f32, f32) {
-    SvgSizeSource::from_element(el).resolve(
-        available_width,
-        available_height,
-        allow_percent_width,
-        allow_percent_height,
-    )
-}
-
-fn resolve_svg_dimension(
-    raw: Option<&str>,
-    available_space: f32,
-    allow_percent: bool,
-) -> Option<f32> {
-    let raw = raw?;
-    let raw = raw.trim();
-    if let Some(pct) = raw.strip_suffix('%') {
-        if allow_percent {
-            if let Ok(value) = pct.trim().parse::<f32>() {
-                if value >= 0.0 {
-                    return Some(available_space * (value / 100.0));
-                }
-            }
-        }
-        return None;
-    }
-
-    // SVG width/height attributes are in CSS px by default.
-    // Values with explicit "pt" suffix stay as-is; otherwise convert px→pt.
-    if raw.ends_with("pt") {
-        let value = crate::parser::svg::parse_length(raw)?;
-        return if value >= 0.0 { Some(value) } else { None };
-    }
-    let value = crate::parser::svg::parse_length(raw)?;
-    if value >= 0.0 {
-        // Convert px to pt (1px = 0.75pt)
-        Some(value * 0.75)
-    } else {
-        None
-    }
-}
-
-fn sync_svg_tree_to_layout_box(tree: &mut crate::parser::svg::SvgTree, width: f32, height: f32) {
-    if tree.view_box.is_none() {
-        tree.width = width;
-        tree.height = height;
-    }
-}
-
-fn inject_inherited_svg_color(
-    tree: &mut crate::parser::svg::SvgTree,
-    inherited_color: (f32, f32, f32),
-) {
-    let inherit_color = |style: &mut crate::parser::svg::SvgStyle| {
-        style.color.get_or_insert(inherited_color);
-    };
-
-    match tree.children.as_mut_slice() {
-        [crate::parser::svg::SvgNode::Group { style, .. }] => inherit_color(style),
-        _ => {
-            tree.children = vec![crate::parser::svg::SvgNode::Group {
-                transform: None,
-                children: std::mem::take(&mut tree.children),
-                style: crate::parser::svg::SvgStyle {
-                    color: Some(inherited_color),
-                    ..crate::parser::svg::SvgStyle::default()
-                },
-            }];
-        }
-    }
-}
-
-/// Maximum size for remote resources (10 MB).
-#[cfg(feature = "remote")]
-const MAX_REMOTE_SIZE: usize = 10 * 1024 * 1024;
-
-/// Fetch bytes from an HTTP/HTTPS URL (requires the `remote` feature).
-/// Returns `None` if the feature is disabled, the request fails, or the response exceeds 10 MB.
-fn fetch_remote_url(url: &str) -> Option<Vec<u8>> {
-    #[cfg(feature = "remote")]
-    {
-        let resp = ureq::get(url).call().ok()?;
-        let len = resp
-            .headers()
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(0);
-        if len > MAX_REMOTE_SIZE {
-            return None;
-        }
-        let buf = resp
-            .into_body()
-            .with_config()
-            .limit(MAX_REMOTE_SIZE as u64)
-            .read_to_vec()
-            .ok()?;
-        Some(buf)
-    }
-    #[cfg(not(feature = "remote"))]
-    {
-        let _ = url;
-        None
-    }
-}
-
-/// Load image data from a src attribute (supports data: URIs, local files, and remote URLs).
-///
-/// This is a convenience wrapper around `load_src_bytes` + `load_image_bytes`.
-#[cfg(test)]
-fn load_image_data(src: &str) -> Option<RasterImageAsset> {
-    let (raw, _mime) = load_src_bytes(src)?;
-    load_image_bytes(raw)
-}
-
-fn build_raster_background_tree(src: &str) -> Option<crate::parser::svg::SvgTree> {
-    let image_src = crate::parser::css::extract_url_path(src).unwrap_or_else(|| src.to_string());
-    let (raw, _mime) = load_src_bytes(&image_src)?;
-    let (width, height) = raster_image_dimensions(&raw)?;
-
-    Some(crate::parser::svg::SvgTree {
-        width: width as f32,
-        height: height as f32,
-        width_attr: None,
-        height_attr: None,
-        preserve_aspect_ratio: crate::parser::svg::SvgPreserveAspectRatio::default(),
-        view_box: None,
-        defs: crate::parser::svg::SvgDefs::default(),
-        children: vec![crate::parser::svg::SvgNode::Image {
-            x: 0.0,
-            y: 0.0,
-            width: width as f32,
-            height: height as f32,
-            href: image_src,
-            preserve_aspect_ratio: crate::parser::svg::SvgPreserveAspectRatio::None,
-            style: crate::parser::svg::SvgStyle::default(),
-        }],
-        text_ctx: crate::parser::svg::SvgTextContext::default(),
-        source_markup: None,
-    })
-}
-
-fn raster_image_dimensions(raw: &[u8]) -> Option<(u32, u32)> {
-    if png::is_png(raw) {
-        let png_info = png::parse_png(raw)?;
-        Some((png_info.width, png_info.height))
-    } else {
-        let image = image::load_from_memory(raw).ok()?;
-        Some((image.width(), image.height()))
-    }
-}
-
-fn load_raster_image_bytes(raw: Vec<u8>, blur_radius: f32) -> Option<RasterImageAsset> {
-    if blur_radius > 0.0 {
-        blur_image_bytes(&raw, blur_radius)
-    } else {
-        load_image_bytes(raw)
-    }
-}
-
-fn blur_image_bytes(raw: &[u8], blur_radius: f32) -> Option<RasterImageAsset> {
-    let decoded = decode_image_for_blur(raw)?;
-    let blurred = image::imageops::blur(&decoded, blur_radius);
-    let mut encoded = Vec::new();
-    image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(blurred).to_rgb8())
-        .write_to(
-            &mut std::io::Cursor::new(&mut encoded),
-            image::ImageFormat::Jpeg,
-        )
-        .ok()?;
-    Some(RasterImageAsset {
-        data: encoded,
-        source_width: decoded.width(),
-        source_height: decoded.height(),
-        format: ImageFormat::Jpeg,
-        png_metadata: None,
-    })
-}
-
-fn decode_image_for_blur(raw: &[u8]) -> Option<image::DynamicImage> {
-    if png::is_png(raw) {
-        decode_png_for_blur(raw)
-    } else {
-        image::load_from_memory(raw).ok()
-    }
-}
-
-fn decode_png_for_blur(data: &[u8]) -> Option<image::DynamicImage> {
-    use image::{DynamicImage, ImageBuffer};
-
-    let mut decoder = png_decoder::Decoder::new(std::io::Cursor::new(data));
-    decoder.ignore_checksums(true);
-    let mut reader = decoder.read_info().ok()?;
-    let output_size = reader.output_buffer_size()?;
-    let mut buf = vec![0; output_size];
-    let info = reader.next_frame(&mut buf).ok()?;
-    let width = info.width;
-    let height = info.height;
-    let used = info.buffer_size();
-    let buf = buf.get(..used)?.to_vec();
-
-    match info.color_type {
-        png_decoder::ColorType::Rgba => {
-            let image = ImageBuffer::from_raw(width, height, buf)?;
-            Some(DynamicImage::ImageRgba8(image))
-        }
-        png_decoder::ColorType::Rgb => {
-            let image = ImageBuffer::from_raw(width, height, buf)?;
-            Some(DynamicImage::ImageRgb8(image))
-        }
-        png_decoder::ColorType::Grayscale => {
-            let image = ImageBuffer::from_raw(width, height, buf)?;
-            Some(DynamicImage::ImageLuma8(image))
-        }
-        png_decoder::ColorType::GrayscaleAlpha => {
-            let image = ImageBuffer::from_raw(width, height, buf)?;
-            Some(DynamicImage::ImageLumaA8(image))
-        }
-        _ => image::load_from_memory(data).ok(),
-    }
-}
-
-#[cfg(test)]
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = u32::from(*chunk.first().unwrap_or(&0));
-        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
-        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-
-        append_base64_char(&mut result, CHARS, ((triple >> 18) & 0x3F) as usize);
-        append_base64_char(&mut result, CHARS, ((triple >> 12) & 0x3F) as usize);
-
-        if chunk.len() > 1 {
-            append_base64_char(&mut result, CHARS, ((triple >> 6) & 0x3F) as usize);
-        } else {
-            result.push('=');
-        }
-
-        if chunk.len() > 2 {
-            append_base64_char(&mut result, CHARS, (triple & 0x3F) as usize);
-        } else {
-            result.push('=');
-        }
-    }
-
-    result
-}
-
-#[cfg(test)]
-fn append_base64_char(out: &mut String, table: &[u8], index: usize) {
-    if let Some(&byte) = table.get(index) {
-        out.push(char::from(byte));
-    }
-}
-
-/// Decode percent-encoded strings (e.g. `%3C` → `<`).  Used for plain-text SVG
-/// data URIs like `data:image/svg+xml,%3Csvg ...%3E`.
-fn percent_decode(input: &str) -> String {
-    let mut out = Vec::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                out.push((hi << 4) | lo);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_default()
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
-fn collapse_whitespace(text: &str) -> String {
-    let mut result = String::new();
-    let mut last_was_space = false;
-    for c in text.chars() {
-        if c.is_whitespace() {
-            if !last_was_space && !result.is_empty() {
-                result.push(' ');
-                last_was_space = true;
-            }
-        } else {
-            result.push(c);
-            last_was_space = false;
-        }
-    }
-    result.trim_end().to_string()
-}
+// Re-export estimate_element_height from paginate module so existing
+// `crate::layout::engine::estimate_element_height` paths keep working.
+pub(crate) use super::paginate::estimate_element_height;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parser::css::parse_stylesheet;
     use crate::parser::html::{parse_html, parse_html_with_styles};
-    use crate::parser::svg::{SvgTree, ViewBox};
+    use crate::util::decode_base64;
 
     const TEST_JPEG_DATA_URI: &str = concat!(
         "data:image/jpeg;base64,",
@@ -9164,173 +1912,6 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout(&nodes, PageSize::A4, Margin::default());
         assert_eq!(pages.len(), 1);
-    }
-
-    #[test]
-    fn svg_size_percent_attrs_do_not_override_intrinsic_image_size() {
-        let tree = SvgTree {
-            width: 300.0,
-            height: 150.0,
-            width_attr: Some("100%".to_string()),
-            height_attr: Some("50%".to_string()),
-            preserve_aspect_ratio: crate::parser::svg::SvgPreserveAspectRatio::default(),
-            view_box: None,
-            defs: Default::default(),
-            children: vec![],
-            text_ctx: crate::parser::svg::SvgTextContext::default(),
-            source_markup: None,
-        };
-
-        assert_eq!(
-            resolve_svg_size(&tree, 400.0, 400.0, false, false),
-            (300.0, 150.0)
-        );
-    }
-
-    #[test]
-    fn svg_size_absolute_width_only_preserves_aspect_ratio() {
-        let tree = SvgTree {
-            width: 300.0,
-            height: 150.0,
-            width_attr: Some("120".to_string()),
-            height_attr: None,
-            preserve_aspect_ratio: crate::parser::svg::SvgPreserveAspectRatio::default(),
-            view_box: Some(ViewBox {
-                min_x: 0.0,
-                min_y: 0.0,
-                width: 20.0,
-                height: 10.0,
-            }),
-            defs: Default::default(),
-            children: vec![],
-            text_ctx: crate::parser::svg::SvgTextContext::default(),
-            source_markup: None,
-        };
-
-        assert_eq!(
-            resolve_svg_size(&tree, 400.0, 400.0, false, false),
-            (90.0, 45.0)
-        );
-    }
-
-    #[test]
-    fn svg_size_absolute_height_only_preserves_aspect_ratio() {
-        let tree = SvgTree {
-            width: 300.0,
-            height: 150.0,
-            width_attr: None,
-            height_attr: Some("60".to_string()),
-            preserve_aspect_ratio: crate::parser::svg::SvgPreserveAspectRatio::default(),
-            view_box: Some(ViewBox {
-                min_x: 0.0,
-                min_y: 0.0,
-                width: 20.0,
-                height: 10.0,
-            }),
-            defs: Default::default(),
-            children: vec![],
-            text_ctx: crate::parser::svg::SvgTextContext::default(),
-            source_markup: None,
-        };
-
-        assert_eq!(
-            resolve_svg_size(&tree, 400.0, 400.0, false, false),
-            (90.0, 45.0)
-        );
-    }
-
-    #[test]
-    fn svg_size_absolute_width_ignores_disallowed_percent_height() {
-        let tree = SvgTree {
-            width: 300.0,
-            height: 150.0,
-            width_attr: Some("120".to_string()),
-            height_attr: Some("50%".to_string()),
-            preserve_aspect_ratio: crate::parser::svg::SvgPreserveAspectRatio::default(),
-            view_box: Some(ViewBox {
-                min_x: 0.0,
-                min_y: 0.0,
-                width: 20.0,
-                height: 10.0,
-            }),
-            defs: Default::default(),
-            children: vec![],
-            text_ctx: crate::parser::svg::SvgTextContext::default(),
-            source_markup: None,
-        };
-
-        assert_eq!(
-            resolve_svg_size(&tree, 400.0, 400.0, false, false),
-            (90.0, 45.0)
-        );
-    }
-
-    #[test]
-    fn svg_size_absolute_height_ignores_disallowed_percent_width() {
-        let tree = SvgTree {
-            width: 300.0,
-            height: 150.0,
-            width_attr: Some("50%".to_string()),
-            height_attr: Some("60".to_string()),
-            preserve_aspect_ratio: crate::parser::svg::SvgPreserveAspectRatio::default(),
-            view_box: Some(ViewBox {
-                min_x: 0.0,
-                min_y: 0.0,
-                width: 20.0,
-                height: 10.0,
-            }),
-            defs: Default::default(),
-            children: vec![],
-            text_ctx: crate::parser::svg::SvgTextContext::default(),
-            source_markup: None,
-        };
-
-        assert_eq!(
-            resolve_svg_size(&tree, 400.0, 400.0, false, false),
-            (90.0, 45.0)
-        );
-    }
-
-    #[test]
-    fn svg_size_intrinsic_is_not_clamped_to_available_width() {
-        let tree = SvgTree {
-            width: 300.0,
-            height: 150.0,
-            width_attr: None,
-            height_attr: None,
-            preserve_aspect_ratio: crate::parser::svg::SvgPreserveAspectRatio::default(),
-            view_box: None,
-            defs: Default::default(),
-            children: vec![],
-            text_ctx: crate::parser::svg::SvgTextContext::default(),
-            source_markup: None,
-        };
-
-        assert_eq!(
-            resolve_svg_size(&tree, 200.0, 400.0, false, false),
-            (300.0, 150.0)
-        );
-    }
-
-    #[test]
-    fn svg_size_negative_percent_falls_back_to_intrinsic_size() {
-        let tree = SvgTree {
-            width: 120.0,
-            height: 60.0,
-            width_attr: Some("-10%".to_string()),
-            height_attr: None,
-            preserve_aspect_ratio: crate::parser::svg::SvgPreserveAspectRatio::default(),
-            view_box: None,
-            defs: Default::default(),
-            children: vec![],
-            text_ctx: crate::parser::svg::SvgTextContext::default(),
-            source_markup: None,
-        };
-
-        assert_eq!(
-            resolve_svg_size(&tree, 400.0, 400.0, true, false),
-            (120.0, 60.0) // falls back to intrinsic size (already in pt)
-        );
     }
 
     #[test]
@@ -9913,14 +2494,6 @@ mod tests {
     }
 
     #[test]
-    fn try_parse_svg_bytes_accepts_utf8_bom_prefix() {
-        let raw = b"\xEF\xBB\xBF<svg width=\"20\" height=\"10\"></svg>";
-        let tree = try_parse_svg_bytes(raw).expect("expected BOM-prefixed SVG to parse");
-        assert_eq!(tree.width, 20.0);
-        assert_eq!(tree.height, 10.0);
-    }
-
-    #[test]
     fn layout_png_image_from_data_uri() {
         // Build a minimal valid PNG and encode as base64
         let png_bytes = build_test_png_bytes();
@@ -9969,47 +2542,6 @@ mod tests {
             pages[0].elements.is_empty()
                 || !matches!(&pages[0].elements[0].1, LayoutElement::Image { .. })
         );
-    }
-
-    #[test]
-    fn fetch_remote_url_returns_none_without_feature() {
-        // Without the "remote" feature, fetch_remote_url always returns None
-        let result = fetch_remote_url("https://example.com/image.png");
-        #[cfg(not(feature = "remote"))]
-        assert!(result.is_none());
-        // With the feature enabled, it would attempt a real HTTP request
-        // (which may or may not succeed depending on network)
-        let _ = result;
-    }
-
-    #[test]
-    fn load_image_data_http_without_feature() {
-        let result = load_image_data("http://example.com/test.jpg");
-        #[cfg(not(feature = "remote"))]
-        assert!(
-            result.is_none(),
-            "HTTP images should be None without remote feature"
-        );
-        let _ = result;
-    }
-
-    #[test]
-    fn load_image_data_https_without_feature() {
-        let result = load_image_data("https://example.com/test.png");
-        #[cfg(not(feature = "remote"))]
-        assert!(
-            result.is_none(),
-            "HTTPS images should be None without remote feature"
-        );
-        let _ = result;
-    }
-
-    #[test]
-    fn base64_decode_roundtrip() {
-        let data = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
-        let encoded = base64_encode(data);
-        let decoded = decode_base64(&encoded).unwrap();
-        assert_eq!(decoded, data);
     }
 
     #[test]
@@ -11859,7 +4391,7 @@ mod tests {
                 clip_children_count: 0,
             };
 
-        let pages = paginate(
+        let pages = crate::layout::paginate::paginate(
             vec![
                 make_block(Position::Absolute, -1, true, 40.0),
                 make_block(Position::Absolute, -1, false, 40.0),
@@ -11987,7 +4519,10 @@ mod tests {
             clip_children_count: 0,
         };
 
-        let pages = paginate(vec![make_block(-1, true), make_block(-2, false)], 200.0);
+        let pages = crate::layout::paginate::paginate(
+            vec![make_block(-1, true), make_block(-2, false)],
+            200.0,
+        );
 
         match &pages[0].elements[0].1 {
             LayoutElement::TextBlock {
@@ -15214,6 +7749,304 @@ line 3</pre>
         assert!(
             has_container_bg,
             "Container should have background_color from rgba stylesheet"
+        );
+    }
+
+    #[test]
+    fn vw_unit_resolves_against_actual_page_size() {
+        // 50vw on Letter (612pt wide) should produce ~306pt, not ~297pt (A4)
+        let html = r#"<div style="width:50vw;background:red">test</div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::LETTER, Margin::default());
+        let expected = PageSize::LETTER.width / 2.0; // 306pt
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock {
+                block_width: Some(w),
+                background_color: Some(_),
+                ..
+            } = el
+            {
+                assert!(
+                    (*w - expected).abs() < 1.0,
+                    "50vw on Letter should be ~{expected}pt, got {w}pt"
+                );
+                return;
+            }
+        }
+        panic!("expected a TextBlock with explicit width from 50vw");
+    }
+
+    // ---- LayoutContext tests ----
+
+    #[test]
+    fn layout_context_available_width_returns_parent_content_width() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: Some(600.0),
+                font_size: 16.0,
+            },
+            containing_block: None,
+            root_font_size: 16.0,
+        };
+        assert!((ctx.available_width() - 400.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn layout_context_available_height_falls_back_to_viewport() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: None,
+                font_size: 16.0,
+            },
+            containing_block: None,
+            root_font_size: 16.0,
+        };
+        assert!((ctx.available_height() - 842.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn layout_context_available_height_uses_parent_when_set() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: Some(300.0),
+                font_size: 16.0,
+            },
+            containing_block: None,
+            root_font_size: 16.0,
+        };
+        assert!((ctx.available_height() - 300.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn layout_context_with_parent_preserves_viewport() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: Some(600.0),
+                font_size: 16.0,
+            },
+            containing_block: Some(ContainingBlock {
+                x: 10.0,
+                width: 400.0,
+                height: 600.0,
+                depth: 1,
+            }),
+            root_font_size: 16.0,
+        };
+        let child = ctx.with_parent(200.0, Some(150.0), 12.0);
+        assert!((child.viewport.width - 595.0).abs() < f32::EPSILON);
+        assert!((child.viewport.height - 842.0).abs() < f32::EPSILON);
+        assert!((child.available_width() - 200.0).abs() < f32::EPSILON);
+        assert!((child.available_height() - 150.0).abs() < f32::EPSILON);
+        assert!((child.parent.font_size - 12.0).abs() < f32::EPSILON);
+        assert!((child.root_font_size - 16.0).abs() < f32::EPSILON);
+        // containing_block is preserved
+        assert!(child.containing_block.is_some());
+    }
+
+    #[test]
+    fn layout_context_with_containing_block_replaces_cb() {
+        let ctx = LayoutContext {
+            viewport: Viewport {
+                width: 595.0,
+                height: 842.0,
+            },
+            parent: ParentBox {
+                content_width: 400.0,
+                content_height: Some(600.0),
+                font_size: 16.0,
+            },
+            containing_block: None,
+            root_font_size: 16.0,
+        };
+        let cb = ContainingBlock {
+            x: 50.0,
+            width: 300.0,
+            height: 200.0,
+            depth: 2,
+        };
+        let updated = ctx.with_containing_block(Some(cb));
+        assert!(updated.containing_block.is_some());
+        assert!((updated.containing_block.unwrap().x - 50.0).abs() < f32::EPSILON);
+        // parent is preserved
+        assert!((updated.available_width() - 400.0).abs() < f32::EPSILON);
+    }
+
+    // ---- Integration tests for extracted layout functions ----
+
+    #[test]
+    fn route_element_dispatches_flex() {
+        let html = r#"<div style="display:flex"><span>A</span><span>B</span></div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+    }
+
+    #[test]
+    fn route_element_dispatches_grid() {
+        let html = r#"<div style="display:grid;grid-template-columns:1fr 1fr"><div>A</div><div>B</div></div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+    }
+
+    #[test]
+    fn route_element_dispatches_inline() {
+        let html = r#"<span>inline text</span>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+    }
+
+    #[test]
+    fn inline_block_shrink_to_fit_width() {
+        let html = r#"<div style="display:inline-block;background:#eee">short</div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        // The inline-block should be narrower than the full page width
+        let page_width = PageSize::A4.width - Margin::default().left - Margin::default().right;
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock {
+                block_width: Some(w),
+                ..
+            } = el
+            {
+                assert!(
+                    *w < page_width,
+                    "inline-block width {w} should be less than page width {page_width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn percentage_border_radius_resolved() {
+        let html =
+            r#"<div style="width:100px;height:100px;border-radius:50%;background:red">.</div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        // 50% of min(100px=75pt, 100px=75pt) = 37.5pt
+        for (_, el) in &pages[0].elements {
+            match el {
+                LayoutElement::TextBlock { border_radius, .. }
+                | LayoutElement::Container { border_radius, .. } => {
+                    if *border_radius > 0.0 {
+                        assert!(
+                            (*border_radius - 37.5).abs() < 1.0,
+                            "border_radius {border_radius} should be ~37.5pt"
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn css_height_narrows_available_height_for_children() {
+        // Parent with explicit height, child SVG with percentage height
+        let html = r#"<div style="height:200pt"><svg width="100" height="50%"></svg></div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        fn find_svg(elements: &[(f32, LayoutElement)]) -> Option<f32> {
+            for (_, el) in elements {
+                match el {
+                    LayoutElement::Svg { height, .. } => return Some(*height),
+                    LayoutElement::Container { children, .. } => {
+                        for child in children {
+                            if let LayoutElement::Svg { height, .. } = child {
+                                return Some(*height);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        let svg_h = find_svg(&pages[0].elements).expect("expected svg element");
+        assert!(
+            (svg_h - 100.0).abs() < 1.0,
+            "SVG height {svg_h} should be ~100pt (50% of 200pt)"
+        );
+    }
+
+    #[test]
+    fn flex_grow_distributes_remaining_space() {
+        let html = r#"
+            <div style="display:flex;width:300px">
+                <div style="flex-grow:1;background:#aaa">A</div>
+                <div style="flex-grow:2;background:#ccc">B</div>
+            </div>
+        "#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+    }
+
+    #[test]
+    fn multicolumn_layout_creates_grid() {
+        let html = r#"<div style="column-count:3"><p>One</p><p>Two</p><p>Three</p></div>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        // Should produce grid rows
+        let has_grid = pages[0].elements.iter().any(|(_, el)| {
+            matches!(
+                el,
+                LayoutElement::Container { .. } | LayoutElement::GridRow { .. }
+            )
+        });
+        assert!(has_grid, "multi-column should produce Container/GridRow");
+    }
+
+    #[test]
+    fn bidi_reordering_preserves_content() {
+        let html = r#"<p>Hello مرحبا World</p>"#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty());
+        // Verify all text content is present (might be reordered)
+        let mut all_text = String::new();
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock { lines, .. } = el {
+                for line in lines {
+                    for run in &line.runs {
+                        all_text.push_str(&run.text);
+                    }
+                }
+            }
+        }
+        assert!(
+            all_text.contains("Hello") && all_text.contains("World"),
+            "BiDi should preserve Latin text"
         );
     }
 }

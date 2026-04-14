@@ -5,7 +5,9 @@ use crate::parser::css::{CalcOp, CalcToken, CssValue};
 
 #[cfg(test)]
 const DEFAULT_FONT_SIZE: f32 = 12.0;
+#[cfg(test)]
 const DEFAULT_PAGE_WIDTH: f32 = 595.28;
+#[cfg(test)]
 const DEFAULT_PAGE_HEIGHT: f32 = 841.89;
 
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +47,7 @@ impl LengthResolutionContext {
         )
     }
 
+    #[cfg(test)]
     pub const fn pdf_with_font_sizes(
         parent_width: f32,
         font_size: f32,
@@ -57,6 +60,18 @@ impl LengthResolutionContext {
             DEFAULT_PAGE_WIDTH,
             DEFAULT_PAGE_HEIGHT,
         )
+    }
+}
+
+impl From<&crate::layout::engine::LayoutContext> for LengthResolutionContext {
+    fn from(ctx: &crate::layout::engine::LayoutContext) -> Self {
+        Self {
+            parent_width: ctx.parent.content_width,
+            font_size: ctx.parent.font_size,
+            root_font_size: ctx.root_font_size,
+            page_width: ctx.viewport.width,
+            page_height: ctx.viewport.height,
+        }
     }
 }
 

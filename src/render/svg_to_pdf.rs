@@ -1225,7 +1225,7 @@ fn render_image_with_resources(
     let Some(href) = href else {
         return;
     };
-    let Some((raw, mime)) = crate::layout::engine::load_src_bytes(href) else {
+    let Some((raw, mime)) = crate::layout::images::load_src_bytes(href) else {
         return;
     };
 
