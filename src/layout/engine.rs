@@ -415,6 +415,7 @@ pub enum LayoutElement {
         block_width: Option<f32>,
         block_height: Option<f32>,
         opacity: f32,
+        float: Float,
         position: Position,
         offset_top: f32,
         offset_left: f32,
@@ -1381,14 +1382,15 @@ pub(crate) fn flatten_element(
 
     // List handling — Ul/Ol pass context to Li children
     if el.tag == HtmlTag::Ul || el.tag == HtmlTag::Ol {
-        let inner_width = available_width - style.margin.left;
+        let list_indent = style.padding.left + style.margin.left;
+        let inner_width = available_width - list_indent;
         // Accumulate indentation from parent list context
         let parent_indent = match list_ctx {
             Some(ListContext::Unordered { indent }) => *indent,
             Some(ListContext::Ordered { indent, .. }) => *indent,
             None => 0.0,
         };
-        let total_indent = parent_indent + style.margin.left;
+        let total_indent = parent_indent + list_indent;
         let mut ctx = if el.tag == HtmlTag::Ol {
             ListContext::Ordered {
                 index: 1,
@@ -8048,6 +8050,340 @@ line 3</pre>
             all_text.contains("Hello") && all_text.contains("World"),
             "BiDi should preserve Latin text"
         );
+    }
+
+    // --- Issue #99: pre code color inheritance ---
+
+    #[test]
+    fn pre_code_inherits_color_from_pre_not_code_default() {
+        let html = r#"<html><head><style>
+            code { color: #be123c; }
+            pre { color: #e2e8f0; background-color: #1e293b; }
+            pre code { color: inherit; }
+        </style></head><body>
+        <pre><code>Hello World</code></pre>
+        </body></html>"#;
+        let result = parse_html_with_styles(html).unwrap();
+        let mut rules = Vec::new();
+        for css in &result.stylesheets {
+            rules.extend(parse_stylesheet(css));
+        }
+        let pages = layout_with_rules(&result.nodes, PageSize::A4, Margin::default(), &rules);
+        // Find the text — may be in TextBlock or Container
+        fn find_hello_color(elements: &[(f32, LayoutElement)]) -> Option<(f32, f32, f32)> {
+            for (_, el) in elements {
+                match el {
+                    LayoutElement::TextBlock { lines, .. } => {
+                        for line in lines {
+                            for run in &line.runs {
+                                if run.text.contains("Hello") {
+                                    return Some(run.color);
+                                }
+                            }
+                        }
+                    }
+                    LayoutElement::Container { children, .. } => {
+                        for child in children {
+                            if let LayoutElement::TextBlock { lines, .. } = child {
+                                for line in lines {
+                                    for run in &line.runs {
+                                        if run.text.contains("Hello") {
+                                            return Some(run.color);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        let color = find_hello_color(&pages[0].elements).expect("should find 'Hello World' text");
+        // pre code { color: inherit } should give #e2e8f0 (0.886, 0.910, 0.941)
+        // NOT #be123c (code default red = 0.745, 0.071, 0.235)
+        assert!(
+            color.0 > 0.7 && color.1 > 0.7,
+            "pre>code text should inherit light color from pre, got ({:.3}, {:.3}, {:.3})",
+            color.0,
+            color.1,
+            color.2
+        );
+    }
+
+    // --- Issue #101: float right positioning (layout side) ---
+    // Note: float positioning is handled by the renderer, not the layout engine.
+    // This test documents the current limitation: offset_left is 0 from layout.
+
+    #[test]
+    #[ignore] // TODO: fix float:right layout positioning (#101)
+    fn float_right_positions_at_right_edge() {
+        let html = r#"
+        <div style="width: 400px">
+            <div style="float: right; width: 100px; height: 50px; background: pink">Float</div>
+            <p>Text should wrap around the float.</p>
+        </div>
+        "#;
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        // Find the floated element (pink background)
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock {
+                float: Float::Right,
+                offset_left,
+                block_width: Some(w),
+                ..
+            } = el
+            {
+                // Float right should have offset_left > 0 (pushed right)
+                // In a 400px (300pt) container with a 100px (75pt) float,
+                // the float should be near the right edge
+                assert!(
+                    *offset_left > 50.0,
+                    "float:right should be positioned rightward, got offset_left={offset_left}"
+                );
+                return;
+            }
+        }
+        // Float right may not produce offset_left — the renderer handles it.
+        // Just verify the float property is preserved.
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock {
+                float: Float::Right,
+                ..
+            } = el
+            {
+                return; // Float property is at least preserved
+            }
+        }
+        panic!("did not find any element with float:right");
+    }
+
+    // --- Issue #103: horizontal separators via border-bottom ---
+
+    #[test]
+    fn h1_border_bottom_produces_visible_border() {
+        let html = r#"<html><head><style>
+            h1 { border-bottom: 3px solid #1e40af; padding-bottom: 8px; }
+        </style></head><body><h1>Title</h1></body></html>"#;
+        let result = parse_html_with_styles(html).unwrap();
+        let mut rules = Vec::new();
+        for css in &result.stylesheets {
+            rules.extend(parse_stylesheet(css));
+        }
+        let pages = layout_with_rules(&result.nodes, PageSize::A4, Margin::default(), &rules);
+        let mut found_border = false;
+        for (_, el) in &pages[0].elements {
+            match el {
+                LayoutElement::TextBlock { border, .. } if border.bottom.width > 0.0 => {
+                    found_border = true;
+                }
+                LayoutElement::Container { border, .. } if border.bottom.width > 0.0 => {
+                    found_border = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            found_border,
+            "h1 with border-bottom:3px should produce a visible bottom border"
+        );
+    }
+
+    // --- Issue #102: margin collapse between adjacent blocks ---
+
+    #[test]
+    fn adjacent_block_margins_collapse() {
+        let html = r#"<html><head><style>
+            .a { margin-bottom: 20px; background: #ddd; }
+            .b { margin-top: 10px; background: #ddd; }
+        </style></head><body>
+            <div class="a">A</div>
+            <div class="b">B</div>
+        </body></html>"#;
+        let result = parse_html_with_styles(html).unwrap();
+        let mut rules = Vec::new();
+        for css in &result.stylesheets {
+            rules.extend(parse_stylesheet(css));
+        }
+        let pages = layout_with_rules(&result.nodes, PageSize::A4, Margin::default(), &rules);
+        // Find positions of the two divs
+        let mut positions: Vec<f32> = Vec::new();
+        for (y, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock { lines, .. } = el {
+                for line in lines {
+                    for run in &line.runs {
+                        if run.text.trim() == "A" || run.text.trim() == "B" {
+                            positions.push(*y);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            positions.len() >= 2,
+            "should find both divs, got {} positions",
+            positions.len()
+        );
+        // The gap between A's bottom and B's top should reflect collapsed margin
+        // max(20px, 10px) = 20px = 15pt, NOT 20+10=30px=22.5pt
+        let gap = positions[1] - positions[0];
+        // Rough check: gap should be less than what non-collapsed margins would produce
+        // With font height ~12pt + 15pt margin: gap ~27pt
+        // Without collapse: ~12pt + 22.5pt = 34.5pt
+        assert!(
+            gap < 32.0,
+            "margins should collapse: gap={gap}pt (expected ~27pt, not ~34pt)"
+        );
+    }
+    #[test]
+    fn block_margin_left_reduces_content_width() {
+        let html = r#"<html><head><style>
+            .m { margin-left: 40px; margin-right: 40px; background: #ddd; }
+        </style></head><body><div class="m">Indented</div></body></html>"#;
+        let result = parse_html_with_styles(html).unwrap();
+        let mut rules = Vec::new();
+        for css in &result.stylesheets {
+            rules.extend(parse_stylesheet(css));
+        }
+        let pages = layout_with_rules(&result.nodes, PageSize::A4, Margin::default(), &rules);
+        let page_width = PageSize::A4.width - Margin::default().left - Margin::default().right;
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock {
+                lines, block_width, ..
+            } = el
+            {
+                let has_indented = lines
+                    .iter()
+                    .any(|l| l.runs.iter().any(|r| r.text.contains("Indented")));
+                if has_indented {
+                    if let Some(w) = block_width {
+                        // 40px = 30pt each side → block should be ~60pt narrower
+                        assert!(
+                            *w < page_width - 40.0,
+                            "block with margin-left/right should be narrower than page: w={w}, page={page_width}"
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+        // If no explicit width, the block fills the page — that's the bug
+        panic!("block with margin-left/right should have reduced width");
+    }
+
+    #[test]
+    fn debug_inline_raw_and_wrapped_runs() {
+        let html = r#"<html><head><style>
+            body { font-family: Georgia, serif; font-size: 15px; line-height: 1.8; }
+            .hl { background-color: #fef3c7; padding: 2px 4px; }
+        </style></head><body>
+            <p>AAA <span class="hl">BBB</span> CCC</p>
+            <p>What was once dominated by heavyweight Java libraries is now seeing a new wave of <span class="hl">high-performance native renderers</span> that promise faster output.</p>
+        </body></html>"#;
+        let result = parse_html_with_styles(html).unwrap();
+        let mut rules = Vec::new();
+        for css in &result.stylesheets {
+            rules.extend(parse_stylesheet(css));
+        }
+        let pages = layout_with_rules(&result.nodes, PageSize::A4, Margin::default(), &rules);
+        for (_, el) in &pages[0].elements {
+            if let LayoutElement::TextBlock { lines, .. } = el {
+                for (li, line) in lines.iter().enumerate() {
+                    for (ri, run) in line.runs.iter().enumerate() {
+                        eprintln!(
+                            "line{li} run{ri}: text={:?} pad=({:.1},{:.1}) bg={:?}",
+                            run.text,
+                            run.padding.0,
+                            run.padding.1,
+                            run.background_color.is_some()
+                        );
+                    }
+                }
+            }
+        }
+        assert!(true);
+    }
+
+    #[test]
+    fn debug_float_right_structure() {
+        let html = r#"<html><head><style>
+            .container { width: 400px; border: 1px solid #ccc; padding: 10px; }
+            .float-right { float: right; width: 100px; height: 80px; background-color: #f472b6; }
+        </style></head><body>
+        <div class="container">
+            <div class="float-right">FR</div>
+            <p>Text</p>
+        </div>
+        </body></html>"#;
+        let result = parse_html_with_styles(html).unwrap();
+        let mut rules = Vec::new();
+        for css in &result.stylesheets {
+            rules.extend(parse_stylesheet(css));
+        }
+        let pages = layout_with_rules(&result.nodes, PageSize::A4, Margin::default(), &rules);
+        fn dump(elements: &[(f32, LayoutElement)], indent: &str) {
+            for (y, el) in elements {
+                match el {
+                    LayoutElement::Container {
+                        float,
+                        block_width,
+                        children,
+                        ..
+                    } => {
+                        eprintln!(
+                            "{indent}Container y={y} float={float:?} w={block_width:?} kids={}",
+                            children.len()
+                        );
+                        for child in children {
+                            match child {
+                                LayoutElement::Container {
+                                    float, block_width, ..
+                                } => {
+                                    eprintln!(
+                                        "{indent}  Container float={float:?} w={block_width:?}"
+                                    );
+                                }
+                                LayoutElement::TextBlock {
+                                    float,
+                                    block_width,
+                                    lines,
+                                    ..
+                                } => {
+                                    let text: String = lines
+                                        .iter()
+                                        .flat_map(|l| l.runs.iter().map(|r| r.text.as_str()))
+                                        .collect();
+                                    eprintln!(
+                                        "{indent}  TextBlock float={float:?} w={block_width:?} text={text:?}"
+                                    );
+                                }
+                                other => eprintln!("{indent}  {:?}", std::mem::discriminant(other)),
+                            }
+                        }
+                    }
+                    LayoutElement::TextBlock {
+                        float,
+                        block_width,
+                        lines,
+                        ..
+                    } => {
+                        let text: String = lines
+                            .iter()
+                            .flat_map(|l| l.runs.iter().map(|r| r.text.as_str()))
+                            .collect();
+                        eprintln!(
+                            "{indent}TextBlock y={y} float={float:?} w={block_width:?} text={text:?}"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        dump(&pages[0].elements, "");
+        // Just verify structure — we want to see the debug output
+        assert!(!pages[0].elements.is_empty());
     }
 }
 

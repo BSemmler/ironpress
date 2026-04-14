@@ -74,10 +74,12 @@ pub fn default_style(tag: HtmlTag) -> StyleMap {
             style.set("margin-bottom", CssValue::Length(2.0));
         }
         HtmlTag::Ul | HtmlTag::Ol => {
-            // Chrome: margin 1em top/bottom, padding-left 40px
+            // Chrome UA: margin 1em top/bottom, padding-left 40px (≈30pt).
+            // Use padding-left (not margin-left) so user CSS `padding-left:0`
+            // correctly resets list indentation.
             style.set("margin-top", CssValue::Number(1.0));
             style.set("margin-bottom", CssValue::Number(1.0));
-            style.set("margin-left", CssValue::Length(20.0));
+            style.set("padding-left", CssValue::Length(30.0));
         }
         HtmlTag::Dl => {
             style.set("margin-top", CssValue::Length(4.0));
@@ -260,8 +262,8 @@ mod tests {
 
     #[test]
     fn list_defaults() {
-        assert!(default_style(HtmlTag::Ul).get("margin-left").is_some());
-        assert!(default_style(HtmlTag::Ol).get("margin-left").is_some());
+        assert!(default_style(HtmlTag::Ul).get("padding-left").is_some());
+        assert!(default_style(HtmlTag::Ol).get("padding-left").is_some());
         assert!(default_style(HtmlTag::Li).get("margin-bottom").is_some());
         assert!(default_style(HtmlTag::Dl).get("margin-top").is_some());
         assert!(default_style(HtmlTag::Dt).get("font-weight").is_some());

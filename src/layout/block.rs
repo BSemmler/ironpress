@@ -44,22 +44,28 @@ pub(crate) fn layout_block_element(
     let available_width = ctx.available_width();
     let available_height = ctx.available_height();
     let abs_containing_block = ctx.containing_block;
-    // Compute effective block width considering CSS width/max-width/min-width
+    // Compute effective block width considering CSS width/max-width/min-width.
+    // Block elements without explicit width shrink by their horizontal margins.
+    let margin_h = style.margin.left + style.margin.right;
     let mut block_w = available_width;
-    if let Some(w) = style.width {
-        block_w = w.min(available_width);
-    } else if let Some(pct) = style.percentage_sizing.width {
+    if let Some(pct) = style.percentage_sizing.width {
+        // Percentage width resolves against the actual layout parent width,
+        // not the style-time parent width stored in style.width.
         block_w = (pct / 100.0 * available_width).min(available_width);
+    } else if let Some(w) = style.width {
+        block_w = w.min(available_width);
+    } else if margin_h > 0.0 {
+        block_w = (available_width - margin_h).max(0.0);
     }
-    if let Some(mw) = style.max_width {
-        block_w = block_w.min(mw);
-    } else if let Some(pct) = style.percentage_sizing.max_width {
+    if let Some(pct) = style.percentage_sizing.max_width {
         block_w = block_w.min(pct / 100.0 * available_width);
+    } else if let Some(mw) = style.max_width {
+        block_w = block_w.min(mw);
     }
-    if let Some(mw) = style.min_width {
-        block_w = block_w.max(mw);
-    } else if let Some(pct) = style.percentage_sizing.min_width {
+    if let Some(pct) = style.percentage_sizing.min_width {
         block_w = block_w.max(pct / 100.0 * available_width);
+    } else if let Some(mw) = style.min_width {
+        block_w = block_w.max(mw);
     }
 
     // Compute effective height considering CSS height/min-height/max-height
@@ -90,10 +96,10 @@ pub(crate) fn layout_block_element(
         } else if style.margin_left_auto {
             available_width - block_w
         } else {
-            0.0
+            style.margin.left
         }
     } else {
-        0.0
+        style.margin.left
     };
 
     // Adjust for box-sizing: border-box
@@ -378,7 +384,7 @@ pub(crate) fn layout_block_element(
                         None,
                         env.rules,
                         env.fonts,
-                        ancestors,
+                        child_ancestors,
                     );
                 }
             }
@@ -630,7 +636,7 @@ pub(crate) fn layout_block_element(
                             None,
                             env.rules,
                             env.fonts,
-                            ancestors,
+                            child_ancestors,
                         );
                     }
                     DomNode::Element(child_el)
@@ -680,7 +686,7 @@ pub(crate) fn layout_block_element(
                             None,
                             env.rules,
                             env.fonts,
-                            ancestors,
+                            child_ancestors,
                         );
                     }
                 }
@@ -843,7 +849,7 @@ pub(crate) fn layout_block_element(
                             None,
                             env.rules,
                             env.fonts,
-                            ancestors,
+                            child_ancestors,
                         );
                     }
                     DomNode::Element(child_el) if collects_as_inline_text(child_el.tag) => {
@@ -854,7 +860,7 @@ pub(crate) fn layout_block_element(
                             None,
                             env.rules,
                             env.fonts,
-                            ancestors,
+                            child_ancestors,
                         );
                     }
                     _ => {} // Block children handled by needs_wrapper
@@ -868,7 +874,7 @@ pub(crate) fn layout_block_element(
                 None,
                 env.rules,
                 env.fonts,
-                ancestors,
+                child_ancestors,
             );
         }
     }
@@ -1287,6 +1293,7 @@ pub(crate) fn layout_block_element(
                 None
             },
             opacity: style.opacity,
+            float: style.float,
             position: style.position,
             offset_top: wrapper_top,
             offset_left: wrapper_left + auto_offset_left,

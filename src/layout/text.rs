@@ -313,8 +313,48 @@ pub(crate) fn wrap_text_runs(
             line_height = options.default_font_size * line_height_factor;
         }
 
-        let text = if current_width > 0.0 && !preserve_spacing {
-            format!(" {word}")
+        // When transitioning between runs with different backgrounds,
+        // emit the inter-word space as a separate unstyled run so the
+        // background doesn't bleed from a highlighted span into plain text.
+        let needs_space = current_width > 0.0 && !preserve_spacing;
+        let prev_bg = current_runs
+            .last()
+            .and_then(|r: &TextRun| r.background_color);
+        let bg_changed = prev_bg != template.background_color;
+
+        let text = if needs_space {
+            if bg_changed && template.background_color.is_some() {
+                // Emit space as separate unstyled run using the PREVIOUS
+                // run's font so it matches the surrounding text metrics.
+                let prev_run = current_runs.last().unwrap_or(&template);
+                let space = " ".to_string();
+                let sw = estimate_word_width(
+                    &space,
+                    prev_run.font_size,
+                    &prev_run.font_family,
+                    prev_run.bold,
+                    prev_run.italic,
+                    fonts,
+                );
+                current_width += sw;
+                current_runs.push(TextRun {
+                    text: space,
+                    font_size: prev_run.font_size,
+                    font_family: prev_run.font_family.clone(),
+                    bold: prev_run.bold,
+                    italic: prev_run.italic,
+                    color: prev_run.color,
+                    underline: false,
+                    line_through: false,
+                    link_url: None,
+                    background_color: None,
+                    padding: (0.0, 0.0),
+                    border_radius: 0.0,
+                });
+                word
+            } else {
+                format!(" {word}")
+            }
         } else {
             word
         };
@@ -659,6 +699,13 @@ fn collect_text_runs_inner(
                         } else {
                             link_url
                         };
+                        let mut child_ancestors = ancestors.to_vec();
+                        child_ancestors.push(AncestorInfo {
+                            element: el,
+                            child_index: 0,
+                            sibling_count: nodes.len(),
+                            preceding_siblings: Vec::new(),
+                        });
                         collect_text_runs_inner(
                             &el.children,
                             &style,
@@ -667,7 +714,7 @@ fn collect_text_runs_inner(
                             rules,
                             fonts,
                             true,
-                            ancestors,
+                            &child_ancestors,
                         );
                     }
                 }

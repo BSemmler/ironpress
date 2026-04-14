@@ -672,7 +672,25 @@ pub(crate) fn patch_absolute_children_containing_block(
                 let text_h: f32 = lines.iter().map(|l| l.height).sum();
                 let elem_h = block_height
                     .unwrap_or(*padding_top + text_h + *padding_bottom + border.vertical_width());
-                let elem_w = block_width.unwrap_or(0.0);
+                let elem_w = block_width.unwrap_or_else(|| {
+                    // Estimate width from text content for right-offset resolution
+                    lines
+                        .iter()
+                        .map(|l| {
+                            l.runs
+                                .iter()
+                                .map(|r| {
+                                    crate::fonts::str_width(
+                                        &r.text,
+                                        r.font_size,
+                                        &r.font_family,
+                                        r.bold,
+                                    )
+                                })
+                                .sum::<f32>()
+                        })
+                        .fold(0.0f32, f32::max)
+                });
 
                 // Resolve right -> left
                 if *offset_left == 0.0 && *offset_right > 0.0 {

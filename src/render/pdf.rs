@@ -370,30 +370,19 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         content.push_str(&format!("/{gs_name} gs\n"));
                     }
 
-                    // Draw box-shadow if specified (rendered as offset filled rect behind element)
+                    // Draw box-shadow with blur
                     if let Some(shadow) = box_shadow {
-                        let (sr, sg, sb) = shadow.color.to_f32_rgb();
-                        let shadow_x = block_x + shadow.offset_x;
-                        let shadow_y = block_bottom + shadow.offset_y;
-                        content.push_str(&format!("{sr} {sg} {sb} rg\n"));
-                        if *border_radius > 0.0 {
-                            content.push_str(&rounded_rect_path(
-                                shadow_x,
-                                shadow_y,
-                                render_width,
-                                total_h,
-                                *border_radius,
-                            ));
-                        } else {
-                            content.push_str(&format!(
-                                "{x} {y} {w} {h} re\n",
-                                x = shadow_x,
-                                y = shadow_y,
-                                w = render_width,
-                                h = total_h,
-                            ));
-                        }
-                        content.push_str("f\n");
+                        render_box_shadow(
+                            &mut content,
+                            shadow,
+                            block_x,
+                            block_bottom,
+                            render_width,
+                            total_h,
+                            *border_radius,
+                            &mut page_ext_gstates,
+                            &mut bg_alpha_counter,
+                        );
                     }
 
                     // Draw background if specified
@@ -740,7 +729,10 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         // spaces between words stay in a single PDF text
                         // string, preventing viewers from dropping them.
                         let merged = merge_runs(&line.runs);
-                        let mut x = text_x;
+
+                        // Phase 1: Draw backgrounds, decorations, and link
+                        // annotations at estimated positions (visual-only).
+                        let mut bg_x = text_x;
                         for run in &merged {
                             if run.text.is_empty() {
                                 continue;
@@ -759,7 +751,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                     content.push_str(&format!("/{gs_name} gs\n"));
                                 }
                                 let (pad_h, pad_v) = run.padding;
-                                let rect_x = x - pad_h;
+                                let rect_x = bg_x - pad_h;
                                 let rect_y = text_y - 2.0 - pad_v;
                                 let rect_w = run_width + pad_h * 2.0;
                                 let rect_h = run.font_size + 2.0 + pad_v * 2.0;
@@ -788,15 +780,6 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                 }
                             }
 
-                            render_run_text(
-                                &mut content,
-                                run,
-                                x,
-                                text_y,
-                                custom_fonts,
-                                &prepared_custom_fonts,
-                            );
-
                             // Draw underline (font-size-relative position and thickness)
                             if run.underline {
                                 let (_, descender_ratio) = crate::fonts::font_metrics_ratios(
@@ -809,8 +792,8 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                 let uy = text_y - desc * 0.6;
                                 let thickness = (run.font_size * 0.07).max(0.5);
                                 content.push_str(&format!(
-                                    "{r} {g} {b} RG\n{thickness} w\n{x} {uy} m {x2} {uy} l\nS\n",
-                                    x2 = x + run_width,
+                                    "{r} {g} {b} RG\n{thickness} w\n{bg_x} {uy} m {x2} {uy} l\nS\n",
+                                    x2 = bg_x + run_width,
                                 ));
                             }
 
@@ -819,20 +802,31 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                 let sy = text_y + run.font_size * 0.3;
                                 let thickness = (run.font_size * 0.07).max(0.5);
                                 content.push_str(&format!(
-                                    "{r} {g} {b} RG\n{thickness} w\n{x} {sy} m {x2} {sy} l\nS\n",
-                                    x2 = x + run_width,
+                                    "{r} {g} {b} RG\n{thickness} w\n{bg_x} {sy} m {x2} {sy} l\nS\n",
+                                    x2 = bg_x + run_width,
                                 ));
                             }
 
                             // Track link annotation
                             if let Some(annotation) =
-                                text_run_link_annotation(run, x, run_width, line_annotation_box)
+                                text_run_link_annotation(run, bg_x, run_width, line_annotation_box)
                             {
                                 annotations.push(annotation);
                             }
 
-                            x += run_width;
+                            bg_x += run_width;
                         }
+
+                        // Phase 2: Render all text in a single BT/ET block
+                        // so the PDF viewer advances the cursor naturally.
+                        render_line_text(
+                            &mut content,
+                            &merged,
+                            text_x,
+                            text_y,
+                            custom_fonts,
+                            &prepared_custom_fonts,
+                        );
 
                         // Reset letter spacing after line
                         if *letter_spacing > 0.0 {
@@ -1170,16 +1164,19 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     let full_height =
                         padding_top + row_height + padding_bottom + border.vertical_width();
 
-                    // Draw box shadow if present
+                    // Draw box shadow with blur
                     if let Some(shadow) = box_shadow {
-                        let sx = margin.left + shadow.offset_x;
-                        let sy = row_y - full_height - shadow.offset_y;
-                        let (sr, sg, sb) = shadow.color.to_f32_rgb();
-                        content.push_str(&format!(
-                            "{sr} {sg} {sb} rg\n{sx} {sy} {w} {h} re\nf\n",
-                            w = container_width,
-                            h = full_height,
-                        ));
+                        render_box_shadow(
+                            &mut content,
+                            shadow,
+                            margin.left,
+                            row_y - full_height,
+                            *container_width,
+                            full_height,
+                            *border_radius,
+                            &mut page_ext_gstates,
+                            &mut bg_alpha_counter,
+                        );
                     }
 
                     // Draw container background
@@ -1792,6 +1789,42 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                             }
                                         }
 
+                                        // Draw borders for nested TextBlock
+                                        if n_border.has_any() {
+                                            let x1 = nested_x;
+                                            let x2 = nested_x + n_width;
+                                            let y_top = nested_y;
+                                            let y_bottom = nested_y - total_h;
+                                            if n_border.top.width > 0.0 {
+                                                let (r, g, b) = n_border.top.color;
+                                                content.push_str(&format!(
+                                                    "{r} {g} {b} RG\n{} w\n{x1} {y_top} m {x2} {y_top} l S\n",
+                                                    n_border.top.width
+                                                ));
+                                            }
+                                            if n_border.bottom.width > 0.0 {
+                                                let (r, g, b) = n_border.bottom.color;
+                                                content.push_str(&format!(
+                                                    "{r} {g} {b} RG\n{} w\n{x1} {y_bottom} m {x2} {y_bottom} l S\n",
+                                                    n_border.bottom.width
+                                                ));
+                                            }
+                                            if n_border.left.width > 0.0 {
+                                                let (r, g, b) = n_border.left.color;
+                                                content.push_str(&format!(
+                                                    "{r} {g} {b} RG\n{} w\n{x1} {y_top} m {x1} {y_bottom} l S\n",
+                                                    n_border.left.width
+                                                ));
+                                            }
+                                            if n_border.right.width > 0.0 {
+                                                let (r, g, b) = n_border.right.color;
+                                                content.push_str(&format!(
+                                                    "{r} {g} {b} RG\n{} w\n{x2} {y_top} m {x2} {y_bottom} l S\n",
+                                                    n_border.right.width
+                                                ));
+                                            }
+                                        }
+
                                         let mut ty = nested_y - n_pt;
                                         for line in n_lines {
                                             let m = line_box_metrics(line, custom_fonts);
@@ -1853,6 +1886,41 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                                     lx += rw;
                                                 }
                                                 ty -= m.descender + m.half_leading;
+                                            }
+                                            // Draw cell borders
+                                            if t_cell.border.has_any() {
+                                                let x1 = tcx;
+                                                let x2 = tcx + tw;
+                                                let y_top = nested_y;
+                                                let y_bottom = nested_y - t_row_h;
+                                                if t_cell.border.top.width > 0.0 {
+                                                    let (r, g, b) = t_cell.border.top.color;
+                                                    content.push_str(&format!(
+                                                        "{r} {g} {b} RG\n{} w\n{x1} {y_top} m {x2} {y_top} l S\n",
+                                                        t_cell.border.top.width
+                                                    ));
+                                                }
+                                                if t_cell.border.bottom.width > 0.0 {
+                                                    let (r, g, b) = t_cell.border.bottom.color;
+                                                    content.push_str(&format!(
+                                                        "{r} {g} {b} RG\n{} w\n{x1} {y_bottom} m {x2} {y_bottom} l S\n",
+                                                        t_cell.border.bottom.width
+                                                    ));
+                                                }
+                                                if t_cell.border.left.width > 0.0 {
+                                                    let (r, g, b) = t_cell.border.left.color;
+                                                    content.push_str(&format!(
+                                                        "{r} {g} {b} RG\n{} w\n{x1} {y_top} m {x1} {y_bottom} l S\n",
+                                                        t_cell.border.left.width
+                                                    ));
+                                                }
+                                                if t_cell.border.right.width > 0.0 {
+                                                    let (r, g, b) = t_cell.border.right.color;
+                                                    content.push_str(&format!(
+                                                        "{r} {g} {b} RG\n{} w\n{x2} {y_top} m {x2} {y_bottom} l S\n",
+                                                        t_cell.border.right.width
+                                                    ));
+                                                }
                                             }
                                             tcx += tw;
                                         }
@@ -2089,20 +2157,24 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     block_width,
                     block_height: c_block_height,
                     opacity: _,
+                    float: c_float,
                     position: _,
                     offset_top: _,
                     offset_left: c_offset_left,
                     overflow: c_overflow,
                     transform: _,
-                    box_shadow: _,
+                    box_shadow: c_box_shadow,
                     background_gradient: _,
                     background_radial_gradient: _,
                     z_index: _,
                     ..
                 } => {
-                    let container_x = margin.left + c_offset_left;
-                    let container_y_top = page_size.height - margin.top - y_pos;
                     let container_w = block_width.unwrap_or(available_width);
+                    let container_x = match c_float {
+                        Float::Right => margin.left + available_width - container_w,
+                        _ => margin.left + c_offset_left,
+                    };
+                    let container_y_top = page_size.height - margin.top - y_pos;
 
                     // Use explicit block_height if set, otherwise compute from children
                     let children_h: f32 = children
@@ -2116,6 +2188,21 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     } else {
                         c_block_height.map_or(content_h, |h| content_h.max(h))
                     };
+
+                    // Draw box-shadow with blur
+                    if let Some(shadow) = c_box_shadow {
+                        render_box_shadow(
+                            &mut content,
+                            shadow,
+                            container_x,
+                            container_y_top - total_h,
+                            container_w,
+                            total_h,
+                            *c_border_radius,
+                            &mut page_ext_gstates,
+                            &mut bg_alpha_counter,
+                        );
+                    }
 
                     // Draw background
                     if let Some((r, g, b, a)) = background_color {
@@ -2734,6 +2821,7 @@ fn render_container_children(
                 block_height,
                 background_color,
                 text_align,
+                float: tb_float,
                 position,
                 offset_top,
                 offset_left,
@@ -2809,18 +2897,24 @@ fn render_container_children(
                 let child_h = padding_top + text_h + padding_bottom + border.vertical_width();
                 let child_h = block_height.map_or(child_h, |h| child_h.max(h));
 
-                // Apply position:relative offset (visual only, flow unaffected)
-                let render_x = if *position == Position::Relative {
-                    x + offset_left
-                } else {
-                    x
+                let render_w = tb_block_width.unwrap_or(width);
+
+                // Apply float/position offset
+                let render_x = match tb_float {
+                    Float::Right => x + width - render_w,
+                    _ => {
+                        if *position == Position::Relative {
+                            x + offset_left
+                        } else {
+                            x
+                        }
+                    }
                 };
                 let render_y = if *position == Position::Relative {
                     y - offset_top
                 } else {
                     y
                 };
-                let render_w = tb_block_width.unwrap_or(width);
 
                 // Draw child background
                 if let Some((r, g, b, a)) = background_color {
@@ -2840,6 +2934,42 @@ fn render_container_children(
                     ));
                     if needs_alpha {
                         content.push_str("/GSDefault gs\n");
+                    }
+                }
+
+                // Draw child borders
+                if border.has_any() {
+                    let bx1 = render_x;
+                    let bx2 = render_x + render_w;
+                    let by1 = render_y;
+                    let by2 = render_y - child_h;
+                    if border.top.width > 0.0 {
+                        let (r, g, b) = border.top.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx2} {by1} l S\n",
+                            border.top.width
+                        ));
+                    }
+                    if border.bottom.width > 0.0 {
+                        let (r, g, b) = border.bottom.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx1} {by2} m {bx2} {by2} l S\n",
+                            border.bottom.width
+                        ));
+                    }
+                    if border.left.width > 0.0 {
+                        let (r, g, b) = border.left.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx1} {by1} m {bx1} {by2} l S\n",
+                            border.left.width
+                        ));
+                    }
+                    if border.right.width > 0.0 {
+                        let (r, g, b) = border.right.color;
+                        content.push_str(&format!(
+                            "{r} {g} {b} RG\n{} w\n{bx2} {by1} m {bx2} {by2} l S\n",
+                            border.right.width
+                        ));
                     }
                 }
 
@@ -2888,12 +3018,17 @@ fn render_container_children(
                 margin_bottom,
                 block_width,
                 block_height: nk_block_height,
+                float: nk_float,
                 overflow,
                 ..
             } => {
                 cursor_y -= margin_top;
                 y = cursor_y;
                 let nk_w = block_width.unwrap_or(width);
+                let nk_x = match nk_float {
+                    Float::Right => x + width - nk_w,
+                    _ => x,
+                };
                 let nk_children_h: f32 = nested_kids
                     .iter()
                     .map(crate::layout::engine::estimate_element_height)
@@ -2913,7 +3048,7 @@ fn render_container_children(
                     }
                     content.push_str(&format!(
                         "{r} {g} {b} rg\n{cx} {cy} {cw} {ch} re\nf\n",
-                        cx = x,
+                        cx = nk_x,
                         cy = y - nk_total_h,
                         cw = nk_w,
                         ch = nk_total_h,
@@ -2924,8 +3059,8 @@ fn render_container_children(
                 }
 
                 // Draw all 4 borders
-                let bx1 = x;
-                let bx2 = x + nk_w;
+                let bx1 = nk_x;
+                let bx2 = nk_x + nk_w;
                 let by1 = y;
                 let by2 = y - nk_total_h;
                 if border.left.width > 0.0 {
@@ -2975,7 +3110,7 @@ fn render_container_children(
                     content.push_str("q\n");
                     if *cont_br > 0.0 {
                         content.push_str(&rounded_rect_path(
-                            x,
+                            nk_x,
                             y - nk_total_h,
                             nk_w,
                             nk_total_h,
@@ -2985,7 +3120,7 @@ fn render_container_children(
                     } else {
                         content.push_str(&format!(
                             "{cx} {cy} {cw} {ch} re W n\n",
-                            cx = x,
+                            cx = nk_x,
                             cy = y - nk_total_h,
                             cw = nk_w,
                             ch = nk_total_h,
@@ -2994,7 +3129,7 @@ fn render_container_children(
                 }
 
                 // Recurse into nested children
-                let inner_x = x + padding_left + border.left.width;
+                let inner_x = nk_x + padding_left + border.left.width;
                 let inner_w = nk_w - padding_left - padding_right - border.horizontal_width();
                 let inner_y = y - padding_top - border.top.width;
                 render_container_children(
@@ -3691,6 +3826,69 @@ fn render_run_text(
     run_width
 }
 
+/// Render all text runs of a line in a single BT/ET block so the PDF viewer
+/// advances the text cursor naturally after each Tj, eliminating cumulative
+/// positioning errors between runs.
+///
+/// Falls back to per-run `render_run_text` when any run requires custom-font
+/// shaping (complex glyph positioning).
+fn render_line_text(
+    content: &mut String,
+    runs: &[TextRun],
+    start_x: f32,
+    y: f32,
+    custom_fonts: &HashMap<String, TtfFont>,
+    prepared_custom_fonts: &PreparedCustomFonts,
+) {
+    let non_empty: Vec<&TextRun> = runs.iter().filter(|r| !r.text.is_empty()).collect();
+    if non_empty.is_empty() {
+        return;
+    }
+
+    // Check whether every run can be rendered with standard PDF fonts
+    // (no custom-font shaping needed).  Unicode-fallback runs also need
+    // shaping, so they count as non-standard.
+    let all_standard = non_empty.iter().all(|run| {
+        crate::text::resolve_custom_font(&run.font_family, run.bold, run.italic, custom_fonts)
+            .is_none()
+            && crate::text::shape_with_unicode_fallback(run, custom_fonts).is_none()
+    });
+
+    if all_standard {
+        // Simple path: single BT block, one Td to set initial position,
+        // then consecutive Tf/rg/Tj operators.  The viewer advances the
+        // text cursor after each Tj.
+        content.push_str("BT\n");
+        let mut first = true;
+        for run in &non_empty {
+            let (r, g, b) = run.color;
+            let font_name = resolve_font_name(run, None, None);
+            content.push_str(&format!("{r} {g} {b} rg\n"));
+            content.push_str(&format!("/{font_name} {} Tf\n", run.font_size));
+            if first {
+                content.push_str(&format!(
+                    "{} {} Td\n",
+                    format_pdf_number(start_x),
+                    format_pdf_number(y),
+                ));
+                first = false;
+            }
+            let encoded = encode_pdf_text(&run.text);
+            content.push_str(&format!("({encoded}) Tj\n"));
+        }
+        content.push_str("ET\n");
+    } else {
+        // Mixed path: some runs need custom-font shaping.
+        // Fall back to per-run rendering with individual BT/ET blocks.
+        let mut x = start_x;
+        for run in &non_empty {
+            let run_width =
+                render_run_text(content, run, x, y, custom_fonts, prepared_custom_fonts);
+            x += run_width;
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct LineBoxMetrics {
     ascender: f32,
@@ -4134,6 +4332,86 @@ fn tile_offsets(origin: f32, step: f32, extent: f32) -> Vec<f32> {
 ///
 /// Uses cubic Bezier curves to approximate circular arcs at each corner.
 /// The magic number k = r * 0.5522847498 gives the best circular approximation.
+/// Render a box-shadow with optional Gaussian blur approximation.
+///
+/// When `blur > 0`, draws multiple concentric semi-transparent layers that
+/// expand outward from the shadow box, creating a smooth falloff. When
+/// `blur == 0`, draws a single solid shadow rectangle.
+#[allow(clippy::too_many_arguments)]
+fn render_box_shadow(
+    content: &mut String,
+    shadow: &crate::style::computed::BoxShadow,
+    box_x: f32,
+    box_y_bottom: f32,
+    box_w: f32,
+    box_h: f32,
+    border_radius: f32,
+    page_ext_gstates: &mut Vec<(String, f32)>,
+    gs_counter: &mut usize,
+) {
+    let (sr, sg, sb, base_alpha) = shadow.color.to_f32_rgba();
+    let blur = shadow.blur;
+    // CSS: positive offset_y = shadow below element.
+    // PDF: Y increases upward, so negate offset_y.
+    let sx = box_x + shadow.offset_x;
+    let sy = box_y_bottom - shadow.offset_y;
+
+    if blur <= 0.5 {
+        // No blur — solid shadow
+        if base_alpha < 1.0 {
+            let gs_name = format!("GSbs{}", *gs_counter);
+            *gs_counter += 1;
+            page_ext_gstates.push((gs_name.clone(), base_alpha));
+            content.push_str(&format!("/{gs_name} gs\n"));
+        }
+        content.push_str(&format!("{sr} {sg} {sb} rg\n"));
+        if border_radius > 0.0 {
+            content.push_str(&rounded_rect_path(sx, sy, box_w, box_h, border_radius));
+            content.push_str("\nf\n");
+        } else {
+            content.push_str(&format!("{sx} {sy} {box_w} {box_h} re\nf\n"));
+        }
+        if base_alpha < 1.0 {
+            content.push_str("/GSDefault gs\n");
+        }
+        return;
+    }
+
+    // Multi-layer blur approximation: draw concentric rects from outside
+    // (most transparent) to inside (most opaque), simulating Gaussian falloff.
+    let layers: usize = 10;
+    content.push_str(&format!("{sr} {sg} {sb} rg\n"));
+    for i in (0..layers).rev() {
+        let t = (i as f32 + 1.0) / layers as f32;
+        // Smooth falloff: each layer contributes a fraction of the base alpha
+        let alpha = base_alpha * (1.0 - t) / layers as f32;
+
+        let expand = blur * t;
+        let gs_name = format!("GSbs{}", *gs_counter);
+        *gs_counter += 1;
+        page_ext_gstates.push((gs_name.clone(), alpha));
+        content.push_str(&format!("/{gs_name} gs\n"));
+
+        let rx = sx - expand;
+        let ry = sy - expand;
+        let rw = box_w + expand * 2.0;
+        let rh = box_h + expand * 2.0;
+        let r = if border_radius > 0.0 {
+            border_radius + expand
+        } else {
+            expand.min(blur * 0.3)
+        };
+
+        if r > 0.5 {
+            content.push_str(&rounded_rect_path(rx, ry, rw, rh, r));
+            content.push_str("\nf\n");
+        } else {
+            content.push_str(&format!("{rx} {ry} {rw} {rh} re\nf\n"));
+        }
+    }
+    content.push_str("/GSDefault gs\n");
+}
+
 fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> String {
     let r = r.min(w / 2.0).min(h / 2.0); // Clamp radius to half the smallest dimension
     let k = r * 0.552_284_8;
