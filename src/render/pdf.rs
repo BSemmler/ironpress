@@ -370,30 +370,19 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         content.push_str(&format!("/{gs_name} gs\n"));
                     }
 
-                    // Draw box-shadow if specified (rendered as offset filled rect behind element)
+                    // Draw box-shadow with blur
                     if let Some(shadow) = box_shadow {
-                        let (sr, sg, sb) = shadow.color.to_f32_rgb();
-                        let shadow_x = block_x + shadow.offset_x;
-                        let shadow_y = block_bottom + shadow.offset_y;
-                        content.push_str(&format!("{sr} {sg} {sb} rg\n"));
-                        if *border_radius > 0.0 {
-                            content.push_str(&rounded_rect_path(
-                                shadow_x,
-                                shadow_y,
-                                render_width,
-                                total_h,
-                                *border_radius,
-                            ));
-                        } else {
-                            content.push_str(&format!(
-                                "{x} {y} {w} {h} re\n",
-                                x = shadow_x,
-                                y = shadow_y,
-                                w = render_width,
-                                h = total_h,
-                            ));
-                        }
-                        content.push_str("f\n");
+                        render_box_shadow(
+                            &mut content,
+                            shadow,
+                            block_x,
+                            block_bottom,
+                            render_width,
+                            total_h,
+                            *border_radius,
+                            &mut page_ext_gstates,
+                            &mut bg_alpha_counter,
+                        );
                     }
 
                     // Draw background if specified
@@ -1175,16 +1164,19 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     let full_height =
                         padding_top + row_height + padding_bottom + border.vertical_width();
 
-                    // Draw box shadow if present
+                    // Draw box shadow with blur
                     if let Some(shadow) = box_shadow {
-                        let sx = margin.left + shadow.offset_x;
-                        let sy = row_y - full_height - shadow.offset_y;
-                        let (sr, sg, sb) = shadow.color.to_f32_rgb();
-                        content.push_str(&format!(
-                            "{sr} {sg} {sb} rg\n{sx} {sy} {w} {h} re\nf\n",
-                            w = container_width,
-                            h = full_height,
-                        ));
+                        render_box_shadow(
+                            &mut content,
+                            shadow,
+                            margin.left,
+                            row_y - full_height,
+                            *container_width,
+                            full_height,
+                            *border_radius,
+                            &mut page_ext_gstates,
+                            &mut bg_alpha_counter,
+                        );
                     }
 
                     // Draw container background
@@ -2171,7 +2163,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     offset_left: c_offset_left,
                     overflow: c_overflow,
                     transform: _,
-                    box_shadow: _,
+                    box_shadow: c_box_shadow,
                     background_gradient: _,
                     background_radial_gradient: _,
                     z_index: _,
@@ -2196,6 +2188,21 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     } else {
                         c_block_height.map_or(content_h, |h| content_h.max(h))
                     };
+
+                    // Draw box-shadow with blur
+                    if let Some(shadow) = c_box_shadow {
+                        render_box_shadow(
+                            &mut content,
+                            shadow,
+                            container_x,
+                            container_y_top - total_h,
+                            container_w,
+                            total_h,
+                            *c_border_radius,
+                            &mut page_ext_gstates,
+                            &mut bg_alpha_counter,
+                        );
+                    }
 
                     // Draw background
                     if let Some((r, g, b, a)) = background_color {
@@ -4325,6 +4332,85 @@ fn tile_offsets(origin: f32, step: f32, extent: f32) -> Vec<f32> {
 ///
 /// Uses cubic Bezier curves to approximate circular arcs at each corner.
 /// The magic number k = r * 0.5522847498 gives the best circular approximation.
+/// Render a box-shadow with optional Gaussian blur approximation.
+///
+/// When `blur > 0`, draws multiple concentric semi-transparent layers that
+/// expand outward from the shadow box, creating a smooth falloff. When
+/// `blur == 0`, draws a single solid shadow rectangle.
+fn render_box_shadow(
+    content: &mut String,
+    shadow: &crate::style::computed::BoxShadow,
+    box_x: f32,
+    box_y_bottom: f32,
+    box_w: f32,
+    box_h: f32,
+    border_radius: f32,
+    page_ext_gstates: &mut Vec<(String, f32)>,
+    gs_counter: &mut usize,
+) {
+    let (sr, sg, sb, base_alpha) = shadow.color.to_f32_rgba();
+    let blur = shadow.blur;
+    // CSS: positive offset_y = shadow below element.
+    // PDF: Y increases upward, so negate offset_y.
+    let sx = box_x + shadow.offset_x;
+    let sy = box_y_bottom - shadow.offset_y;
+
+    if blur <= 0.5 {
+        // No blur — solid shadow
+        if base_alpha < 1.0 {
+            let gs_name = format!("GSbs{}", *gs_counter);
+            *gs_counter += 1;
+            page_ext_gstates.push((gs_name.clone(), base_alpha));
+            content.push_str(&format!("/{gs_name} gs\n"));
+        }
+        content.push_str(&format!("{sr} {sg} {sb} rg\n"));
+        if border_radius > 0.0 {
+            content.push_str(&rounded_rect_path(sx, sy, box_w, box_h, border_radius));
+            content.push_str("\nf\n");
+        } else {
+            content.push_str(&format!("{sx} {sy} {box_w} {box_h} re\nf\n"));
+        }
+        if base_alpha < 1.0 {
+            content.push_str("/GSDefault gs\n");
+        }
+        return;
+    }
+
+    // Multi-layer blur approximation: draw concentric rects from outside
+    // (most transparent) to inside (most opaque), simulating Gaussian falloff.
+    let layers: usize = 10;
+    content.push_str(&format!("{sr} {sg} {sb} rg\n"));
+    for i in (0..layers).rev() {
+        let t = (i as f32 + 1.0) / layers as f32;
+        // Smooth falloff: each layer contributes a fraction of the base alpha
+        let alpha = base_alpha * (1.0 - t) / layers as f32;
+
+        let expand = blur * t;
+        let gs_name = format!("GSbs{}", *gs_counter);
+        *gs_counter += 1;
+        page_ext_gstates.push((gs_name.clone(), alpha));
+        content.push_str(&format!("/{gs_name} gs\n"));
+
+        let rx = sx - expand;
+        let ry = sy - expand;
+        let rw = box_w + expand * 2.0;
+        let rh = box_h + expand * 2.0;
+        let r = if border_radius > 0.0 {
+            border_radius + expand
+        } else {
+            expand.min(blur * 0.3)
+        };
+
+        if r > 0.5 {
+            content.push_str(&rounded_rect_path(rx, ry, rw, rh, r));
+            content.push_str("\nf\n");
+        } else {
+            content.push_str(&format!("{rx} {ry} {rw} {rh} re\nf\n"));
+        }
+    }
+    content.push_str("/GSDefault gs\n");
+}
+
 fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> String {
     let r = r.min(w / 2.0).min(h / 2.0); // Clamp radius to half the smallest dimension
     let k = r * 0.552_284_8;
