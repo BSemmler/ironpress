@@ -48,22 +48,24 @@ pub(crate) fn layout_block_element(
     // Block elements without explicit width shrink by their horizontal margins.
     let margin_h = style.margin.left + style.margin.right;
     let mut block_w = available_width;
-    if let Some(w) = style.width {
-        block_w = w.min(available_width);
-    } else if let Some(pct) = style.percentage_sizing.width {
+    if let Some(pct) = style.percentage_sizing.width {
+        // Percentage width resolves against the actual layout parent width,
+        // not the style-time parent width stored in style.width.
         block_w = (pct / 100.0 * available_width).min(available_width);
+    } else if let Some(w) = style.width {
+        block_w = w.min(available_width);
     } else if margin_h > 0.0 {
         block_w = (available_width - margin_h).max(0.0);
     }
-    if let Some(mw) = style.max_width {
-        block_w = block_w.min(mw);
-    } else if let Some(pct) = style.percentage_sizing.max_width {
+    if let Some(pct) = style.percentage_sizing.max_width {
         block_w = block_w.min(pct / 100.0 * available_width);
+    } else if let Some(mw) = style.max_width {
+        block_w = block_w.min(mw);
     }
-    if let Some(mw) = style.min_width {
-        block_w = block_w.max(mw);
-    } else if let Some(pct) = style.percentage_sizing.min_width {
+    if let Some(pct) = style.percentage_sizing.min_width {
         block_w = block_w.max(pct / 100.0 * available_width);
+    } else if let Some(mw) = style.min_width {
+        block_w = block_w.max(mw);
     }
 
     // Compute effective height considering CSS height/min-height/max-height
