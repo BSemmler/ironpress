@@ -7934,7 +7934,7 @@ line 3</pre>
         let page_width = PageSize::A4.width - Margin::default().left - Margin::default().right;
         for (_, el) in &pages[0].elements {
             if let LayoutElement::TextBlock {
-                block_width: Some(_w),
+                block_width: Some(w),
                 ..
             } = el
             {
@@ -8408,7 +8408,7 @@ line 3</pre>
         assert!(!pages[0].elements.is_empty());
         let found = pages[0].elements.iter().any(|(_, el)| {
             if let LayoutElement::TextBlock {
-                block_width: Some(_w),
+                block_width: Some(w),
                 ..
             } = el
             {

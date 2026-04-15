@@ -1,6 +1,5 @@
 /// Smoke tests: generate PDFs for all major features and verify structural integrity.
 /// These tests ensure no feature addition breaks existing PDF generation.
-
 fn pdf_is_valid(pdf: &[u8]) -> bool {
     let s = String::from_utf8_lossy(pdf);
     pdf.starts_with(b"%PDF-1.4")
