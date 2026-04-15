@@ -795,11 +795,22 @@ pub(crate) fn layout_block_element(
             }
             // Emit absolute-positioned ::before / ::after pseudo-elements
             if positioned_container && (before_is_abs || after_is_abs) {
-                // Compute containing block from children height
-                let children_h: f32 = output[wrapper_output_idx..]
-                    .iter()
-                    .map(estimate_element_height)
-                    .sum();
+                // Compute containing block height from children.
+                // Use total element height but strip outer margins of the
+                // first/last children — those margins collapse out of the
+                // containing block and shouldn't inflate height:100% pseudos.
+                let children_slice = &output[wrapper_output_idx..];
+                let children_h_raw: f32 =
+                    children_slice.iter().map(estimate_element_height).sum();
+                let first_mt = children_slice.first().map_or(0.0, |e| match e {
+                    LayoutElement::TextBlock { margin_top, .. } => *margin_top,
+                    _ => 0.0,
+                });
+                let last_mb = children_slice.last().map_or(0.0, |e| match e {
+                    LayoutElement::TextBlock { margin_bottom, .. } => *margin_bottom,
+                    _ => 0.0,
+                });
+                let children_h = (children_h_raw - first_mt - last_mb).max(0.0);
                 let pseudo_cb = Some(ContainingBlock {
                     x: 0.0,
                     width: block_w,
@@ -932,7 +943,8 @@ pub(crate) fn layout_block_element(
             None
         };
 
-        // Compute clip rect before moving lines - clip to content area (exclude padding)
+        // Compute clip rect — CSS overflow:hidden clips to the padding box
+        // (includes padding, excludes border).
         let clip_rect = if style.overflow == Overflow::Hidden {
             let text_height: f32 = lines.iter().map(|l| l.height).sum();
             let padding_box_h = resolve_padding_box_height(
@@ -943,16 +955,7 @@ pub(crate) fn layout_block_element(
                 style.border.vertical_width(),
                 style.box_sizing,
             );
-            // Clip to content area: exclude padding from the clip rect
-            let content_x = style.padding.left;
-            let content_y = style.padding.top;
-            let content_w = (block_w - style.padding.left - style.padding.right).max(0.0);
-            let content_h = (padding_box_h
-                - style.padding.top
-                - style.padding.bottom
-                - style.border.vertical_width())
-            .max(0.0);
-            Some((content_x, content_y, content_w, content_h))
+            Some((0.0, 0.0, block_w, padding_box_h))
         } else {
             None
         };

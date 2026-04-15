@@ -324,6 +324,7 @@ pub(crate) fn layout_inline_block_group(
             background_position: BackgroundPosition::default(),
             background_repeat: BackgroundRepeat::Repeat,
             background_origin: BackgroundOrigin::Padding,
+            align_items: crate::style::computed::AlignItems::Stretch,
         });
     }
 }
