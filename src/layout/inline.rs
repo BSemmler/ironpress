@@ -268,10 +268,12 @@ pub(crate) fn layout_inline_block_group(
         }
 
         x += item.margin_left;
+        let natural_h: f32 = item.lines.iter().map(|l| l.height).sum();
         current_cells.push(FlexCell {
             lines: item.lines.clone(),
             x_offset: x,
             width: item.width,
+            natural_height: natural_h,
             text_align: item.text_align,
             background_color: item.background_color,
             padding_top: item.padding_top,

@@ -170,6 +170,8 @@ pub struct FlexCell {
     pub padding_bottom: f32,
     pub padding_left: f32,
     pub border: LayoutBorder,
+    /// Natural height of this flex item (without stretching)
+    pub natural_height: f32,
     pub border_radius: f32,
     pub background_gradient: Option<LinearGradient>,
     pub background_radial_gradient: Option<RadialGradient>,

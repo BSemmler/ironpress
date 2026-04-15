@@ -199,6 +199,7 @@ pub(crate) fn layout_flex_container(
         flex_grow: f32,
         flex_shrink: f32,
         height: f32,
+        natural_height: f32,
     }
 
     let mut items: Vec<FlexItem> = Vec::new();
@@ -364,6 +365,7 @@ pub(crate) fn layout_flex_container(
                 flex_grow: child_style.flex_grow,
                 flex_shrink: child_style.flex_shrink,
                 height: child_h,
+                natural_height: child_h, // Natural height for align-items flex-start
             });
             continue;
         }
@@ -523,6 +525,7 @@ pub(crate) fn layout_flex_container(
             flex_grow: child_style.flex_grow,
             flex_shrink: child_style.flex_shrink,
             height: child_h + child_style.margin.top + child_style.margin.bottom,
+            natural_height: child_h + child_style.margin.top + child_style.margin.bottom,
         });
     }
 
@@ -909,6 +912,7 @@ pub(crate) fn layout_flex_container(
                                 lines: Vec::new(),
                                 x_offset: x,
                                 width: item.width,
+                                natural_height: item.height,
                                 text_align: TextAlign::Left,
                                 background_color: None,
                                 padding_top: 0.0,
@@ -964,10 +968,13 @@ pub(crate) fn layout_flex_container(
                                 merged_lines.extend(tb_lines.iter().cloned());
                             }
                         }
+                        // Calculate natural height for merged item
+                        let natural_h: f32 = merged_lines.iter().map(|l| l.height).sum();
                         flex_cells.push(FlexCell {
                             lines: merged_lines,
                             x_offset: x,
                             width: item.width,
+                            natural_height: natural_h,
                             text_align: TextAlign::Left,
                             background_color: first_bg,
                             padding_top: first_pt,
@@ -1009,9 +1016,13 @@ pub(crate) fn layout_flex_container(
                         background_position: tb_bg_pos,
                         background_repeat: tb_bg_repeat,
                         background_origin: tb_bg_origin,
+                        border,
                         ..
                     }) = item.elements.first()
                     {
+                        // Calculate natural height for this item
+                        let text_h: f32 = tb_lines.iter().map(|l| l.height).sum();
+                        let natural_h = *tb_pt + text_h + *tb_pb + border.vertical_width();
                         flex_cells.push(FlexCell {
                             lines: tb_lines.clone(),
                             x_offset: x,
@@ -1022,7 +1033,7 @@ pub(crate) fn layout_flex_container(
                             padding_right: *tb_pr,
                             padding_bottom: *tb_pb,
                             padding_left: *tb_pl,
-                            border: LayoutBorder::default(),
+                            border: *border,
                             border_radius: *tb_br,
                             background_gradient: tb_grad.clone(),
                             background_radial_gradient: tb_rgrad.clone(),
@@ -1034,6 +1045,7 @@ pub(crate) fn layout_flex_container(
                             background_origin: *tb_bg_origin,
                             transform: None,
                             nested_elements: Vec::new(),
+                            natural_height: natural_h,
                         });
                     } else {
                         // Single non-TextBlock element (e.g. Container): store
@@ -1042,6 +1054,7 @@ pub(crate) fn layout_flex_container(
                             lines: Vec::new(),
                             x_offset: x,
                             width: item.width,
+                            natural_height: item.height,
                             text_align: TextAlign::Left,
                             background_color: None,
                             padding_top: 0.0,
