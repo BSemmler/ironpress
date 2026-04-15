@@ -4159,7 +4159,10 @@ fn render_svg_background(
             let s = (paint.reference_box.width / vb_w).min(paint.reference_box.height / vb_h);
             (vb_w * s, vb_h * s)
         }
-        BackgroundSize::Auto => (vb_w, vb_h),
+        BackgroundSize::Auto => {
+            // SVG dimensions are in CSS pixels; convert to points (1px = 0.75pt)
+            (intrinsic_width * 0.75, intrinsic_height * 0.75)
+        }
         BackgroundSize::Explicit {
             width: explicit_width,
             height: explicit_height,
