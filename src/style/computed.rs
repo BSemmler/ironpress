@@ -1620,6 +1620,8 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
     if let Some(CssValue::Length(v)) = get_non_special(map, "gap") {
         style.gap = *v;
         style.grid_gap = *v;
+        style.column_gap = *v;
+        style.row_gap = *v;
     }
 
     // Grid template columns
@@ -1627,9 +1629,11 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
         style.grid_template_columns = parse_grid_template_columns(k);
     }
 
-    // Grid gap
+    // Grid gap (shorthand sets both column and row gap)
     if let Some(CssValue::Length(v)) = get_non_special(map, "grid-gap") {
         style.grid_gap = *v;
+        style.column_gap = *v;
+        style.row_gap = *v;
     }
 
     if let Some(CssValue::Keyword(k)) = get_non_special(map, "page-break-before") {
@@ -2094,8 +2098,14 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
         ("gap", |s, v| {
             s.gap = v;
             s.grid_gap = v;
+            s.column_gap = v;
+            s.row_gap = v;
         }),
-        ("grid-gap", |s, v| s.grid_gap = v),
+        ("grid-gap", |s, v| {
+            s.grid_gap = v;
+            s.column_gap = v;
+            s.row_gap = v;
+        }),
         ("border-width", |s, v| {
             s.border.top.width = v;
             s.border.right.width = v;
