@@ -70,11 +70,27 @@ pub(crate) fn shape_with_unicode_fallback<'a>(
     run: &TextRun,
     fonts: &'a HashMap<String, TtfFont>,
 ) -> Option<(ShapedRun, &'a str, &'a TtfFont)> {
-    // Only apply to standard PDF font runs with non-WinAnsi text
+    // For standard PDF fonts, fall back when text has non-WinAnsi characters.
+    // For custom fonts (including bundled Liberation), fall back when the
+    // primary font cannot shape the text (missing glyphs for CJK, Arabic, etc.).
     if matches!(run.font_family, FontFamily::Custom(_)) {
-        return None;
-    }
-    if crate::render::pdf::is_winansi_encodable(&run.text) {
+        // Check if all characters in the run have glyphs in the primary font's
+        // cmap table. If any character is missing, fall back to the unicode font.
+        let all_covered = if let Some((_, primary_font)) =
+            crate::system_fonts::find_font(fonts, run.font_family.name(), run.bold, run.italic)
+        {
+            run.text.chars().all(|ch| {
+                let cp = ch as u32;
+                cp <= u16::MAX as u32 && primary_font.cmap.contains_key(&(cp as u16))
+            })
+        } else {
+            false
+        };
+        if all_covered {
+            return None;
+        }
+        // Font doesn't cover all characters — try unicode fallback
+    } else if crate::render::pdf::is_winansi_encodable(&run.text) {
         return None;
     }
     let (key, font) = fonts.get_key_value(crate::system_fonts::UNICODE_FALLBACK_KEY)?;

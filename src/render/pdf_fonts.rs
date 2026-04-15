@@ -42,7 +42,32 @@ pub(crate) fn prepare_custom_fonts(
     pages: &[Page],
     custom_fonts: &HashMap<String, TtfFont>,
 ) -> PreparedCustomFonts {
-    collect_font_usage(pages, custom_fonts)
+    let mut usage = collect_font_usage(pages, custom_fonts);
+
+    // Ensure the unicode fallback and emoji fallback fonts are prepared
+    // when the layout contains non-WinAnsi characters.  The layout phase
+    // doesn't know which font will handle these characters — that decision
+    // is made at render time — so we conservatively include the fallback
+    // fonts with all glyphs.
+    for fallback_key in [
+        crate::system_fonts::UNICODE_FALLBACK_KEY,
+        crate::system_fonts::EMOJI_FALLBACK_KEY,
+    ] {
+        if let Some(fallback_font) = custom_fonts.get(fallback_key) {
+            if !usage.contains_key(fallback_key) {
+                // Register all glyphs from the fallback font so it's fully available
+                let mut fu = FontUsage::default();
+                for (&ch, &gid) in &fallback_font.cmap {
+                    fu.record_glyph(gid, vec![ch]);
+                }
+                if !fu.glyphs.is_empty() {
+                    usage.insert(fallback_key.to_string(), fu);
+                }
+            }
+        }
+    }
+
+    usage
         .into_iter()
         .filter_map(|(resolved_name, usage)| {
             custom_fonts
