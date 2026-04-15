@@ -170,6 +170,8 @@ pub struct FlexCell {
     pub padding_bottom: f32,
     pub padding_left: f32,
     pub border: LayoutBorder,
+    /// Natural height of this flex item (without stretching)
+    pub natural_height: f32,
     pub border_radius: f32,
     pub background_gradient: Option<LinearGradient>,
     pub background_radial_gradient: Option<RadialGradient>,
@@ -4563,7 +4565,7 @@ mod tests {
         let nodes = parse_html(html).unwrap();
         let pages = layout(&nodes, PageSize::A4, Margin::default());
         let found = pages[0].elements.iter().any(|(_, el)| {
-            matches!(el, LayoutElement::TextBlock { block_width: Some(w), .. } if (*w - 200.0).abs() < 1.0)
+            matches!(el, LayoutElement::TextBlock { block_width: Some(_w), .. } if (*_w - 200.0).abs() < 1.0)
         });
         assert!(found, "Expected element with width ~200pt from var()");
     }
@@ -7763,14 +7765,14 @@ line 3</pre>
         let expected = PageSize::LETTER.width / 2.0; // 306pt
         for (_, el) in &pages[0].elements {
             if let LayoutElement::TextBlock {
-                block_width: Some(w),
+                block_width: Some(_w),
                 background_color: Some(_),
                 ..
             } = el
             {
                 assert!(
-                    (*w - expected).abs() < 1.0,
-                    "50vw on Letter should be ~{expected}pt, got {w}pt"
+                    (*_w - expected).abs() < 1.0,
+                    "50vw on Letter should be ~{expected}pt, got {_w}pt"
                 );
                 return;
             }
@@ -8132,7 +8134,7 @@ line 3</pre>
             if let LayoutElement::TextBlock {
                 float: Float::Right,
                 offset_left,
-                block_width: Some(w),
+                block_width: Some(_w),
                 ..
             } = el
             {

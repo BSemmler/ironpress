@@ -1,4 +1,5 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 const SIMPLE_HTML: &str = "<h1>Hello</h1><p>World</p>";
 

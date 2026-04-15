@@ -641,6 +641,7 @@ pub struct ComputedStyle {
     pub counter_increment: Vec<(String, i32)>,
     pub column_count: Option<u32>,
     pub column_gap: f32,
+    pub row_gap: f32,
     pub blur_radius: f32,
 }
 
@@ -734,6 +735,7 @@ impl Default for ComputedStyle {
             counter_increment: Vec::new(),
             column_count: None,
             column_gap: 0.0,
+            row_gap: 0.0,
             blur_radius: 0.0,
         }
     }
@@ -897,6 +899,7 @@ pub fn compute_style_with_context(
     style.counter_reset = Vec::new();
     style.counter_increment = Vec::new();
     style.z_index = 0;
+    style.row_gap = 0.0;
     style.blur_radius = 0.0;
     // custom_properties inherit from parent (already cloned)
 
@@ -1036,6 +1039,7 @@ pub fn compute_pseudo_element_style(
     style.counter_reset = Vec::new();
     style.counter_increment = Vec::new();
     style.z_index = 0;
+    style.row_gap = 0.0;
     style.blur_radius = 0.0;
     // Default display for pseudo-elements is inline
     style.display = Display::Inline;
@@ -1616,6 +1620,8 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
     if let Some(CssValue::Length(v)) = get_non_special(map, "gap") {
         style.gap = *v;
         style.grid_gap = *v;
+        style.column_gap = *v;
+        style.row_gap = *v;
     }
 
     // Grid template columns
@@ -1623,9 +1629,11 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
         style.grid_template_columns = parse_grid_template_columns(k);
     }
 
-    // Grid gap
+    // Grid gap (shorthand sets both column and row gap)
     if let Some(CssValue::Length(v)) = get_non_special(map, "grid-gap") {
         style.grid_gap = *v;
+        style.column_gap = *v;
+        style.row_gap = *v;
     }
 
     if let Some(CssValue::Keyword(k)) = get_non_special(map, "page-break-before") {
@@ -2090,8 +2098,14 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
         ("gap", |s, v| {
             s.gap = v;
             s.grid_gap = v;
+            s.column_gap = v;
+            s.row_gap = v;
         }),
-        ("grid-gap", |s, v| s.grid_gap = v),
+        ("grid-gap", |s, v| {
+            s.grid_gap = v;
+            s.column_gap = v;
+            s.row_gap = v;
+        }),
         ("border-width", |s, v| {
             s.border.top.width = v;
             s.border.right.width = v;

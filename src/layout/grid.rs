@@ -82,9 +82,10 @@ pub(crate) fn layout_grid_container(
 ) {
     let available_width = ctx.available_width();
     let inner_width = available_width - style.padding.left - style.padding.right;
-    let gap = style.grid_gap;
+    let column_gap = style.column_gap;
+    let row_gap = style.row_gap;
 
-    let col_widths = resolve_grid_columns(&style.grid_template_columns, inner_width, gap);
+    let col_widths = resolve_grid_columns(&style.grid_template_columns, inner_width, column_gap);
     let num_cols = col_widths.len();
 
     // Build ancestors list for children of this element
@@ -208,12 +209,12 @@ pub(crate) fn layout_grid_container(
             });
         }
 
-        let margin_top = if is_first_row { 0.0 } else { gap };
+        let margin_top = if is_first_row { 0.0 } else { row_gap };
 
         grid_children.push(LayoutElement::GridRow {
             cells,
             col_widths: col_widths.clone(),
-            gap,
+            gap: column_gap,
             margin_top,
             margin_bottom: 0.0,
             border: LayoutBorder::default(),

@@ -58,7 +58,7 @@ struct ParityResult {
 
 fn run_fixture(name: &str, html: &str) -> ParityResult {
     let start = Instant::now();
-    let pdf = ironpress::html_to_pdf(html).expect(&format!("Failed to render {}", name));
+    let pdf = ironpress::html_to_pdf(html).unwrap_or_else(|_| panic!("Failed to render {}", name));
     let elapsed = start.elapsed().as_micros();
     let valid = pdf_is_valid(&pdf);
     ParityResult {
@@ -103,10 +103,8 @@ fn verify_expectations(fixture_key: &str, pdf: &[u8]) {
         }
     };
 
-    let expectations: serde_json::Value = serde_json::from_str(&json_str).expect(&format!(
-        "Failed to parse expectations JSON for '{}'",
-        fixture_key
-    ));
+    let expectations: serde_json::Value = serde_json::from_str(&json_str)
+        .unwrap_or_else(|_| panic!("Failed to parse expectations JSON for '{}'", fixture_key));
 
     let pdf_text = String::from_utf8_lossy(pdf);
 
@@ -209,7 +207,8 @@ fn assert_fixture(fixture_key: &str, html: &str) {
     let short_name = fixture_key.rsplit('/').next().unwrap_or(fixture_key);
 
     let start = Instant::now();
-    let pdf = ironpress::html_to_pdf(html).expect(&format!("Failed to render {}", short_name));
+    let pdf =
+        ironpress::html_to_pdf(html).unwrap_or_else(|_| panic!("Failed to render {}", short_name));
     let _elapsed = start.elapsed().as_micros();
 
     assert!(
