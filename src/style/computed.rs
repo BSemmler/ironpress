@@ -1206,6 +1206,7 @@ fn reset_to_initial(style: &mut ComputedStyle, property: &str) {
         "counter-increment" => style.counter_increment = default.counter_increment,
         "column-count" | "columns" => style.column_count = default.column_count,
         "column-gap" => style.column_gap = default.column_gap,
+        "row-gap" => style.row_gap = default.row_gap,
         "filter" => style.blur_radius = default.blur_radius,
         _ => {}
     }
@@ -1334,6 +1335,7 @@ fn restore_from_parent(style: &mut ComputedStyle, property: &str, parent: &Compu
         "counter-increment" => style.counter_increment = parent.counter_increment.clone(),
         "column-count" | "columns" => style.column_count = parent.column_count,
         "column-gap" => style.column_gap = parent.column_gap,
+        "row-gap" => style.row_gap = parent.row_gap,
         "filter" => style.blur_radius = parent.blur_radius,
         _ => {}
     }
@@ -1871,6 +1873,9 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
     }
     if let Some(CssValue::Length(v)) = get_non_special(map, "column-gap") {
         style.column_gap = *v;
+    }
+    if let Some(CssValue::Length(v)) = get_non_special(map, "row-gap") {
+        style.row_gap = *v;
     }
 
     // Overflow
