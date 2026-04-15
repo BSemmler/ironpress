@@ -270,7 +270,7 @@ pub(crate) fn layout_block_element(
         output.push(LayoutElement::TextBlock {
             lines,
             margin_top: style.margin.top,
-            margin_bottom: 0.0,
+            margin_bottom: style.margin.bottom,
             text_align: style.text_align,
             background_color: bg,
             padding_top: style.padding.top,
