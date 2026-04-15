@@ -1618,7 +1618,8 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                     bg_x + cell.padding_left,
                                     bg_y + cell.padding_bottom,
                                     (cell.width - cell.padding_left - cell.padding_right).max(0.0),
-                                    (cell_render_h - cell.padding_top - cell.padding_bottom).max(0.0),
+                                    (cell_render_h - cell.padding_top - cell.padding_bottom)
+                                        .max(0.0),
                                 ),
                                 BackgroundOrigin::Border | BackgroundOrigin::Padding => {
                                     (bg_x, bg_y, cell.width, cell_render_h)

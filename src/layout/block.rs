@@ -643,8 +643,14 @@ pub(crate) fn layout_block_element(
                         );
                     }
                     DomNode::Element(child_el)
-                        if (child_el.tag.is_block() || child_el.tag == HtmlTag::Svg
-                            || element_has_css_display_block(child_el, style, env.rules, child_ancestors))
+                        if (child_el.tag.is_block()
+                            || child_el.tag == HtmlTag::Svg
+                            || element_has_css_display_block(
+                                child_el,
+                                style,
+                                env.rules,
+                                child_ancestors,
+                            ))
                             && !collects_as_inline_text(child_el.tag) =>
                     {
                         // Flush inline runs before block child
@@ -804,8 +810,7 @@ pub(crate) fn layout_block_element(
                 // first/last children — those margins collapse out of the
                 // containing block and shouldn't inflate height:100% pseudos.
                 let children_slice = &output[wrapper_output_idx..];
-                let children_h_raw: f32 =
-                    children_slice.iter().map(estimate_element_height).sum();
+                let children_h_raw: f32 = children_slice.iter().map(estimate_element_height).sum();
                 let first_mt = children_slice.first().map_or(0.0, |e| match e {
                     LayoutElement::TextBlock { margin_top, .. } => *margin_top,
                     _ => 0.0,
