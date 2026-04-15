@@ -641,6 +641,7 @@ pub struct ComputedStyle {
     pub counter_increment: Vec<(String, i32)>,
     pub column_count: Option<u32>,
     pub column_gap: f32,
+    pub row_gap: f32,
     pub blur_radius: f32,
 }
 
@@ -734,6 +735,7 @@ impl Default for ComputedStyle {
             counter_increment: Vec::new(),
             column_count: None,
             column_gap: 0.0,
+            row_gap: 0.0,
             blur_radius: 0.0,
         }
     }
@@ -897,6 +899,7 @@ pub fn compute_style_with_context(
     style.counter_reset = Vec::new();
     style.counter_increment = Vec::new();
     style.z_index = 0;
+    style.row_gap = 0.0;
     style.blur_radius = 0.0;
     // custom_properties inherit from parent (already cloned)
 
@@ -1036,6 +1039,7 @@ pub fn compute_pseudo_element_style(
     style.counter_reset = Vec::new();
     style.counter_increment = Vec::new();
     style.z_index = 0;
+    style.row_gap = 0.0;
     style.blur_radius = 0.0;
     // Default display for pseudo-elements is inline
     style.display = Display::Inline;
