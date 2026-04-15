@@ -45,20 +45,24 @@ pub(crate) fn prepare_custom_fonts(
     let mut usage = collect_font_usage(pages, custom_fonts);
 
     // Ensure the unicode fallback and emoji fallback fonts are prepared
-    // when the layout contains non-WinAnsi characters.  The layout phase
-    // doesn't know which font will handle these characters — that decision
-    // is made at render time — so we conservatively include the fallback
-    // fonts with all glyphs.
+    // for characters that the primary fonts can't render. Scan all text
+    // runs in the layout for non-WinAnsi characters and register only
+    // the glyphs actually needed (subsetting for size efficiency).
+    let non_winansi_chars = collect_non_winansi_chars(pages, custom_fonts);
     for fallback_key in [
         crate::system_fonts::UNICODE_FALLBACK_KEY,
         crate::system_fonts::EMOJI_FALLBACK_KEY,
     ] {
         if let Some(fallback_font) = custom_fonts.get(fallback_key) {
             if !usage.contains_key(fallback_key) {
-                // Register all glyphs from the fallback font so it's fully available
                 let mut fu = FontUsage::default();
-                for (&ch, &gid) in &fallback_font.cmap {
-                    fu.record_glyph(gid, vec![ch]);
+                for &ch in &non_winansi_chars {
+                    let ch_u16 = ch as u32;
+                    if ch_u16 <= u16::MAX as u32 {
+                        if let Some(&gid) = fallback_font.cmap.get(&(ch_u16 as u16)) {
+                            fu.record_glyph(gid, vec![ch_u16 as u16]);
+                        }
+                    }
                 }
                 if !fu.glyphs.is_empty() {
                     usage.insert(fallback_key.to_string(), fu);
@@ -75,6 +79,70 @@ pub(crate) fn prepare_custom_fonts(
                 .map(|ttf| (resolved_name, prepare_font(ttf, &usage)))
         })
         .collect()
+}
+
+/// Collect all non-WinAnsi characters from text runs in layout pages.
+/// These characters will need the unicode/emoji fallback font.
+fn collect_non_winansi_chars(
+    pages: &[Page],
+    custom_fonts: &HashMap<String, TtfFont>,
+) -> BTreeSet<char> {
+    let mut chars = BTreeSet::new();
+    for page in pages {
+        for (_, element) in &page.elements {
+            collect_non_winansi_from_element(element, custom_fonts, &mut chars);
+        }
+    }
+    chars
+}
+
+fn collect_non_winansi_from_element(
+    element: &LayoutElement,
+    custom_fonts: &HashMap<String, TtfFont>,
+    chars: &mut BTreeSet<char>,
+) {
+    match element {
+        LayoutElement::TextBlock { lines, .. } => {
+            for line in lines {
+                for run in &line.runs {
+                    for ch in run.text.chars() {
+                        if !crate::render::pdf::is_winansi_char(ch) {
+                            chars.insert(ch);
+                        } else if let FontFamily::Custom(name) = &run.font_family {
+                            // Check if the primary custom font covers this char
+                            if let Some((_, font)) =
+                                crate::system_fonts::find_font(custom_fonts, name, false, false)
+                            {
+                                let cp = ch as u32;
+                                if cp <= u16::MAX as u32 && !font.cmap.contains_key(&(cp as u16)) {
+                                    chars.insert(ch);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        LayoutElement::FlexRow { cells, .. } => {
+            for cell in cells {
+                for line in &cell.lines {
+                    for run in &line.runs {
+                        for ch in run.text.chars() {
+                            if !crate::render::pdf::is_winansi_char(ch) {
+                                chars.insert(ch);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        LayoutElement::Container { children, .. } => {
+            for child in children {
+                collect_non_winansi_from_element(child, custom_fonts, chars);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_font_usage(

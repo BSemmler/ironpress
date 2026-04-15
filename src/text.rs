@@ -98,6 +98,58 @@ pub(crate) fn shape_with_unicode_fallback<'a>(
     Some((shaped, key.as_str(), font))
 }
 
+/// Check if a run needs unicode fallback (has characters the primary font can't cover).
+pub(crate) fn needs_unicode_fallback(run: &TextRun, fonts: &HashMap<String, TtfFont>) -> bool {
+    if let FontFamily::Custom(name) = &run.font_family {
+        if let Some((_, font)) = crate::system_fonts::find_font(fonts, name, run.bold, run.italic) {
+            return run.text.chars().any(|ch| {
+                let cp = ch as u32;
+                cp > u16::MAX as u32 || !font.cmap.contains_key(&(cp as u16))
+            });
+        }
+    }
+    !crate::render::pdf::is_winansi_encodable(&run.text)
+}
+
+/// Split a text run into segments at font-coverage boundaries.
+/// Returns `(text, use_fallback)` pairs — `use_fallback=true` means the
+/// segment should be rendered with the unicode fallback font.
+pub(crate) fn split_run_by_font_coverage(
+    run: &TextRun,
+    fonts: &HashMap<String, TtfFont>,
+) -> Vec<(String, bool)> {
+    let primary_font = if let FontFamily::Custom(name) = &run.font_family {
+        crate::system_fonts::find_font(fonts, name, run.bold, run.italic).map(|(_, f)| f)
+    } else {
+        None
+    };
+
+    let mut segments: Vec<(String, bool)> = Vec::new();
+    let mut current = String::new();
+    let mut current_is_fallback = false;
+
+    for ch in run.text.chars() {
+        let needs_fallback = if let Some(font) = primary_font {
+            let cp = ch as u32;
+            cp > u16::MAX as u32 || !font.cmap.contains_key(&(cp as u16))
+        } else {
+            !crate::render::pdf::is_winansi_char(ch)
+        };
+
+        if current.is_empty() {
+            current_is_fallback = needs_fallback;
+        } else if needs_fallback != current_is_fallback {
+            segments.push((std::mem::take(&mut current), current_is_fallback));
+            current_is_fallback = needs_fallback;
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        segments.push((current, current_is_fallback));
+    }
+    segments
+}
+
 fn shape_text_with_font(text: &str, font_size: f32, font: &TtfFont) -> Option<ShapedRun> {
     if text.is_empty() {
         return Some(ShapedRun {
