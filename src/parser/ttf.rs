@@ -1152,18 +1152,23 @@ mod tests {
         let cmap = make_cmap_format4(65, 65, -64); // char 65 -> glyph 1
         let name = make_name_table_ascii(1, b"Test");
 
-        let mut os2 = vec![0u8; 74];
+        let mut os2 = vec![0u8; 78];
         // sTypoAscender at offset 68
         os2[68..70].copy_from_slice(&900i16.to_be_bytes());
         // sTypoDescender at offset 70
         os2[70..72].copy_from_slice(&(-300i16).to_be_bytes());
         // sTypoLineGap at offset 72
         os2[72..74].copy_from_slice(&50i16.to_be_bytes());
+        // usWinAscent at offset 74
+        os2[74..76].copy_from_slice(&950u16.to_be_bytes());
+        // usWinDescent at offset 76
+        os2[76..78].copy_from_slice(&350u16.to_be_bytes());
 
         let data = build_full_ttf(&head, &hhea, &maxp, &hmtx, &cmap, &name, Some(&os2));
         let font = parse_ttf(data).unwrap();
         assert_eq!(font.pdf_metrics, FontVerticalMetrics::new(800, -200, 0));
-        assert_eq!(font.layout_metrics, FontVerticalMetrics::new(900, -300, 50));
+        // layout_metrics uses usWinAscent/usWinDescent for Chrome parity
+        assert_eq!(font.layout_metrics, FontVerticalMetrics::new(950, -350, 0));
     }
 
     #[test]
