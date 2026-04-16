@@ -201,7 +201,7 @@ fn shape_text_with_font(text: &str, font_size: f32, font: &TtfFont) -> Option<Sh
     for ((info, position), unicode) in infos
         .iter()
         .zip(positions.iter())
-        .zip(cluster_unicode.into_iter())
+        .zip(cluster_unicode)
     {
         let x_advance = position.x_advance as f32 * scale;
         glyphs.push(ShapedGlyph {
