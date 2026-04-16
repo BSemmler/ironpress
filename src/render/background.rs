@@ -282,11 +282,9 @@ fn unpremultiply_rgba(image: &image::RgbaImage) -> image::RgbaImage {
     for (x, y, pixel) in image.enumerate_pixels() {
         let alpha = u16::from(pixel[3]);
         let unpremultiply = |channel: u8| -> u8 {
-            if alpha == 0 {
-                0
-            } else {
-                ((u16::from(channel) * 255 + (alpha / 2)) / alpha).min(255) as u8
-            }
+            (u16::from(channel) * 255 + (alpha / 2))
+                .checked_div(alpha)
+                .map_or(0, |v| v.min(255) as u8)
         };
         unpremultiplied.put_pixel(
             x,
