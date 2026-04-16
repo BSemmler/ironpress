@@ -198,11 +198,7 @@ fn shape_text_with_font(text: &str, font_size: f32, font: &TtfFont) -> Option<Sh
 
     let mut width = 0.0;
     let mut glyphs = Vec::with_capacity(infos.len());
-    for ((info, position), unicode) in infos
-        .iter()
-        .zip(positions.iter())
-        .zip(cluster_unicode)
-    {
+    for ((info, position), unicode) in infos.iter().zip(positions.iter()).zip(cluster_unicode) {
         let x_advance = position.x_advance as f32 * scale;
         glyphs.push(ShapedGlyph {
             glyph_id: info.glyph_id as u16,
