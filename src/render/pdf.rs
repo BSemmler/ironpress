@@ -8904,8 +8904,8 @@ mod tests {
         // Covers lines 1628-1657: TTF font objects in PDF
         use crate::parser::ttf::TtfFont;
         let mut cmap = HashMap::new();
-        for c in 32u16..=126 {
-            cmap.insert(c, c - 31);
+        for c in 32u32..=126 {
+            cmap.insert(c, (c - 31) as u16);
         }
         let ttf = TtfFont {
             font_name: "TestFont".to_string(),
@@ -8966,8 +8966,8 @@ mod tests {
         use crate::parser::ttf::TtfFont;
 
         let mut cmap = HashMap::new();
-        for c in 32u16..=126 {
-            cmap.insert(c, c - 31);
+        for c in 32u32..=126 {
+            cmap.insert(c, (c - 31) as u16);
         }
         let ttf = TtfFont {
             font_name: "TestFont".to_string(),

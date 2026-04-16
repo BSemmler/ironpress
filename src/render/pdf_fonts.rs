@@ -53,17 +53,21 @@ pub(crate) fn prepare_custom_fonts(
         crate::system_fonts::UNICODE_FALLBACK_KEY,
         crate::system_fonts::EMOJI_FALLBACK_KEY,
         crate::system_fonts::ARABIC_FALLBACK_KEY,
+        crate::system_fonts::MULTILINGUAL_FALLBACK_KEY,
     ] {
         if let Some(fallback_font) = custom_fonts.get(fallback_key) {
             if !usage.contains_key(fallback_key) {
                 let mut fu = FontUsage::default();
-                for &ch in &non_winansi_chars {
-                    let ch_u16 = ch as u32;
-                    if ch_u16 <= u16::MAX as u32 {
-                        if let Some(&gid) = fallback_font.cmap.get(&(ch_u16 as u16)) {
-                            fu.record_glyph(gid, vec![ch_u16 as u16]);
-                        }
-                    }
+                // Register ALL glyphs from the fallback font — subsetting
+                // fallback fonts causes glyph ID mismatches with rustybuzz
+                // shaping output. The full font is embedded but only the
+                // actually-used glyphs appear in the PDF content stream.
+                for (&ch, &gid) in &fallback_font.cmap {
+                    // Encode as UTF-16 for the ToUnicode CMap
+                    let unicode: Vec<u16> = char::from_u32(ch)
+                        .map(|c| c.encode_utf16(&mut [0; 2]).to_vec())
+                        .unwrap_or_else(|| vec![ch as u16]);
+                    fu.record_glyph(gid, unicode);
                 }
                 if !fu.glyphs.is_empty() {
                     usage.insert(fallback_key.to_string(), fu);
@@ -115,7 +119,7 @@ fn collect_non_winansi_from_element(
                                 crate::system_fonts::find_font(custom_fonts, name, false, false)
                             {
                                 let cp = ch as u32;
-                                if cp <= u16::MAX as u32 && !font.cmap.contains_key(&(cp as u16)) {
+                                if !font.cmap.contains_key(&cp) {
                                     chars.insert(ch);
                                 }
                             }
@@ -240,9 +244,10 @@ fn collect_font_usage_from_run(
         return;
     }
 
-    for codepoint in run.text.encode_utf16() {
-        if let Some(glyph_id) = ttf.cmap.get(&codepoint).copied() {
-            font_usage.record_glyph(glyph_id, vec![codepoint]);
+    for ch in run.text.chars() {
+        if let Some(glyph_id) = ttf.cmap.get(&(ch as u32)).copied() {
+            let unicode: Vec<u16> = ch.encode_utf16(&mut [0; 2]).to_vec();
+            font_usage.record_glyph(glyph_id, unicode);
         }
     }
 }
@@ -316,7 +321,10 @@ fn to_unicode_map_for_full_font(ttf: &TtfFont) -> ToUnicodeMap {
     let mut mappings = BTreeMap::new();
     for (&char_code, &glyph_id) in &ttf.cmap {
         if glyph_id != 0 {
-            mappings.entry(glyph_id).or_insert_with(|| vec![char_code]);
+            let unicode: Vec<u16> = char::from_u32(char_code)
+                .map(|c| c.encode_utf16(&mut [0; 2]).to_vec())
+                .unwrap_or_else(|| vec![char_code as u16]);
+            mappings.entry(glyph_id).or_insert(unicode);
         }
     }
     mappings.into_iter().collect()
@@ -383,7 +391,7 @@ mod tests {
         }
     }
 
-    fn make_ttf_with_cmap(cmap: HashMap<u16, u16>, widths: Vec<u16>) -> TtfFont {
+    fn make_ttf_with_cmap(cmap: HashMap<u32, u16>, widths: Vec<u16>) -> TtfFont {
         TtfFont {
             font_name: "TestFont".into(),
             units_per_em: 1000,
@@ -674,8 +682,8 @@ mod tests {
     #[test]
     fn to_unicode_map_for_full_font_maps_cmap_entries() {
         let mut cmap = HashMap::new();
-        cmap.insert(0x0041u16, 1u16); // 'A' → glyph 1
-        cmap.insert(0x0042u16, 2u16); // 'B' → glyph 2
+        cmap.insert(0x0041u32, 1u16); // 'A' → glyph 1
+        cmap.insert(0x0042u32, 2u16); // 'B' → glyph 2
         let ttf = make_ttf_with_cmap(cmap, vec![0, 500, 500]);
         let map = to_unicode_map_for_full_font(&ttf);
         // The map is collected from a BTreeMap, so entries are sorted by glyph_id.
@@ -691,8 +699,8 @@ mod tests {
     fn to_unicode_map_for_full_font_skips_glyph_zero() {
         // cmap entries that map to glyph ID 0 (.notdef) must not appear in the map.
         let mut cmap = HashMap::new();
-        cmap.insert(0x0020u16, 0u16); // space → .notdef (should be skipped)
-        cmap.insert(0x0041u16, 1u16); // 'A' → glyph 1
+        cmap.insert(0x0020u32, 0u16); // space → .notdef (should be skipped)
+        cmap.insert(0x0041u32, 1u16); // 'A' → glyph 1
         let ttf = make_ttf_with_cmap(cmap, vec![0, 500]);
         let map = to_unicode_map_for_full_font(&ttf);
         assert!(
@@ -713,8 +721,8 @@ mod tests {
     fn to_unicode_map_for_full_font_first_codepoint_wins_for_same_glyph() {
         // Two codepoints map to the same glyph — only the first insertion should survive.
         let mut cmap = HashMap::new();
-        cmap.insert(0x0041u16, 5u16);
-        cmap.insert(0x0061u16, 5u16); // same glyph
+        cmap.insert(0x0041u32, 5u16);
+        cmap.insert(0x0061u32, 5u16); // same glyph
         let ttf = make_ttf_with_cmap(cmap, vec![0, 0, 0, 0, 0, 500]);
         let map = to_unicode_map_for_full_font(&ttf);
         let entry = map.iter().find(|(gid, _)| *gid == 5);

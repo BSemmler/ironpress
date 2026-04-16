@@ -373,6 +373,10 @@ static NOTO_ARABIC_DATA: &[u8] = include_bytes!("../assets/NotoSansArabic-Regula
 /// Key for the Arabic fallback font.
 pub(crate) const ARABIC_FALLBACK_KEY: &str = "__arabic_fallback";
 
+/// Key for the multilingual (Noto Sans) fallback font — covers Hebrew,
+/// Greek, Cyrillic, and other non-CJK/non-Arabic scripts.
+pub(crate) const MULTILINGUAL_FALLBACK_KEY: &str = "__multilingual_fallback";
+
 /// Load bundled Liberation fonts as the default serif/sans-serif/monospace.
 /// Liberation fonts are metrically identical to Times New Roman, Arial, and
 /// Courier New, ensuring ironpress output matches Chromium rendering exactly.
@@ -385,11 +389,12 @@ pub(crate) fn load_bundled_liberation_fonts(fonts: &mut HashMap<String, TtfFont>
             }
         }
     }
-    // Load bundled Noto Sans as the primary unicode fallback — it covers
-    // Hebrew, Greek, Cyrillic, Latin, and many other scripts.
-    if !fonts.contains_key(UNICODE_FALLBACK_KEY) {
+    // Load bundled Noto Sans for scripts not covered by system fonts
+    // (Hebrew, Greek, Cyrillic, etc.). Uses its own key so it doesn't
+    // block the system CJK font from being loaded as UNICODE_FALLBACK.
+    if !fonts.contains_key(MULTILINGUAL_FALLBACK_KEY) {
         if let Ok(font) = crate::parser::ttf::parse_ttf(NOTO_SANS_DATA.to_vec()) {
-            fonts.insert(UNICODE_FALLBACK_KEY.to_string(), font);
+            fonts.insert(MULTILINGUAL_FALLBACK_KEY.to_string(), font);
         }
     }
     // Load bundled Noto Sans Arabic for Arabic script.
