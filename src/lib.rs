@@ -2058,6 +2058,41 @@ body { background: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy
     }
 
     #[test]
+    fn pdf_inline_block_box_shadow_renders() {
+        // Regression: box-shadow on `display: inline-block` items (rendered via
+        // FlexCells) was dropped because FlexCell didn't carry the shadow. The
+        // blurred shadow path emits per-layer ExtGState entries with low alpha.
+        let html = "<div><div style=\"display:inline-block;width:80pt;height:40pt;\
+            background:white;box-shadow:4pt 4pt 8pt rgba(0,0,0,0.3)\">A</div></div>";
+        let pdf = html_to_pdf(html).unwrap();
+        let content = String::from_utf8_lossy(&pdf);
+        // The shadow renderer registers its alpha layers under `GSbs<n>`.
+        assert!(
+            content.contains("GSbs"),
+            "expected inline-block box-shadow to emit blurred shadow ExtGState (GSbs...)"
+        );
+    }
+
+    #[test]
+    fn pdf_svg_path_opacity_emits_gstate() {
+        // Regression: <path opacity="0.6"> inside inline SVG must register
+        // an ExtGState with /ca 0.6 so the shape is rendered translucent.
+        let html = "<svg width=\"120\" height=\"120\" viewBox=\"0 0 120 120\">\
+            <path d=\"M10,110 L60,20 L110,110 Z\" fill=\"#f97316\" opacity=\"0.6\" />\
+        </svg>";
+        let pdf = html_to_pdf(html).unwrap();
+        let content = String::from_utf8_lossy(&pdf);
+        assert!(
+            content.contains("/ca 0.6"),
+            "expected SVG opacity to emit an ExtGState dict with /ca 0.6"
+        );
+        assert!(
+            content.contains("GSsvg"),
+            "expected the SVG ExtGState to be referenced via /GSsvgN gs"
+        );
+    }
+
+    #[test]
     fn pdf_box_shadow_renders_rect() {
         // Covers pdf.rs lines 184-213: box-shadow rendering
         let html =

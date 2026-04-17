@@ -182,6 +182,8 @@ pub struct FlexCell {
     pub background_repeat: BackgroundRepeat,
     pub background_origin: BackgroundOrigin,
     pub transform: Option<Transform>,
+    /// Box shadow to render behind this cell (CSS `box-shadow`).
+    pub box_shadow: Option<BoxShadow>,
     /// Nested layout elements for complex flex items (tables, images, etc.)
     pub nested_elements: Vec<LayoutElement>,
     /// Cross-axis offset of this cell within the FlexRow. For single-line

@@ -246,17 +246,31 @@ pub(crate) fn layout_flex_container(
         //   proportionally by grow factors
         // - flex-grow == 0 without basis/width: use equal share, then shrink to
         //   natural content width (for justify-content)
+        //
+        // For `box-sizing: content-box` (the CSS default), the specified width
+        // is the *content* width, so the outer box used for flex main-axis
+        // layout is `width + padding + border`. For `border-box`, the
+        // specified width is already the outer box.
         let has_explicit_width = child_style.flex_basis.is_some() || child_style.width.is_some();
-        let child_w_initial = child_style
-            .flex_basis
-            .or(child_style.width)
-            .unwrap_or_else(|| {
+        let inflate_outer = |w: f32| -> f32 {
+            if child_style.box_sizing == BoxSizing::ContentBox {
+                w + child_style.padding.left
+                    + child_style.padding.right
+                    + child_style.border.horizontal_width()
+            } else {
+                w
+            }
+        };
+        let child_w_initial = match child_style.flex_basis.or(child_style.width) {
+            Some(w) => inflate_outer(w),
+            None => {
                 if child_style.flex_grow > 0.0 {
                     0.0
                 } else {
                     width_for_percentages / child_count as f32
                 }
-            });
+            }
+        };
         // For text wrapping, use equal share as measurement width even when
         // flex base is 0 — text needs a nonzero width to wrap into lines.
         // The actual item width will be set after grow distribution.
@@ -276,13 +290,14 @@ pub(crate) fn layout_flex_container(
             preceding_siblings: Vec::new(),
         });
 
-        // Two widths: child_w_for_flex is the CSS flex-basis for wrapping
-        // decisions, child_w_for_layout is the width used to lay out children
-        // (inflated for flex-grow items so percentage children resolve correctly).
-        let child_w_for_flex = child_style
-            .flex_basis
-            .or(child_style.width)
-            .unwrap_or(width_for_percentages / child_count as f32);
+        // Two widths: child_w_for_flex is the outer main-axis size used for
+        // wrapping decisions (content-box + padding + border for content-box),
+        // child_w_for_layout is the content width used to lay out children so
+        // percentage resolution against the parent content area is correct.
+        let child_w_for_flex = match child_style.flex_basis.or(child_style.width) {
+            Some(w) => inflate_outer(w),
+            None => width_for_percentages / child_count as f32,
+        };
         let child_w_for_layout = if child_style.flex_grow > 0.0
             && child_style.flex_basis == Some(0.0)
             && child_style.width.is_none()
@@ -291,7 +306,12 @@ pub(crate) fn layout_flex_container(
             // but flex wrapping uses the actual basis (child_w_for_flex).
             width_for_percentages
         } else {
-            child_w_for_flex
+            // Content area for child layout = outer minus padding + border.
+            (child_w_for_flex
+                - child_style.padding.left
+                - child_style.padding.right
+                - child_style.border.horizontal_width())
+            .max(0.0)
         };
 
         // Check if this flex item has block-level children that need full layout
@@ -391,12 +411,8 @@ pub(crate) fn layout_flex_container(
         let child_w = if !has_explicit_width && child_style.flex_grow == 0.0 && !runs.is_empty() {
             let natural_text_w = measure_runs_width(&runs, env.fonts);
             let pad_h = child_style.padding.left + child_style.padding.right;
-            let border_h = if child_style.box_sizing == BoxSizing::BorderBox {
-                child_style.border.horizontal_width()
-            } else {
-                0.0
-            };
-            // Content width = text width + padding + border (capped at container)
+            let border_h = child_style.border.horizontal_width();
+            // Outer width = text + padding + border (capped at container)
             (natural_text_w + pad_h + border_h).min(width_for_percentages)
         } else {
             child_w_initial
@@ -408,14 +424,12 @@ pub(crate) fn layout_flex_container(
         } else {
             child_w
         };
-        let child_inner_w = if child_style.box_sizing == BoxSizing::BorderBox {
-            wrap_w
-                - child_style.padding.left
-                - child_style.padding.right
-                - child_style.border.horizontal_width()
-        } else {
-            wrap_w - child_style.padding.left - child_style.padding.right
-        }
+        // wrap_w is always the outer box width (after content-box inflation),
+        // so the inner content area is outer - padding - border.
+        let child_inner_w = (wrap_w
+            - child_style.padding.left
+            - child_style.padding.right
+            - child_style.border.horizontal_width())
         .max(0.0);
 
         let lines = if !runs.is_empty() {
@@ -962,6 +976,7 @@ pub(crate) fn layout_flex_container(
                                 background_repeat: BackgroundRepeat::Repeat,
                                 background_origin: BackgroundOrigin::Padding,
                                 transform: None,
+                                box_shadow: None,
                                 nested_elements: item.elements.clone(),
                                 y_offset: 0.0,
                                 line_cross_size: 0.0,
@@ -1026,6 +1041,7 @@ pub(crate) fn layout_flex_container(
                             background_repeat: BackgroundRepeat::Repeat,
                             background_origin: BackgroundOrigin::Padding,
                             transform: None,
+                            box_shadow: None,
                             nested_elements: Vec::new(),
                             y_offset: 0.0,
                             line_cross_size: 0.0,
@@ -1052,6 +1068,7 @@ pub(crate) fn layout_flex_container(
                         background_position: tb_bg_pos,
                         background_repeat: tb_bg_repeat,
                         background_origin: tb_bg_origin,
+                        box_shadow: tb_bs,
                         border,
                         ..
                     }) = item.elements.first()
@@ -1080,6 +1097,7 @@ pub(crate) fn layout_flex_container(
                             background_repeat: *tb_bg_repeat,
                             background_origin: *tb_bg_origin,
                             transform: None,
+                            box_shadow: *tb_bs,
                             nested_elements: Vec::new(),
                             natural_height: natural_h,
                             y_offset: 0.0,
@@ -1110,6 +1128,7 @@ pub(crate) fn layout_flex_container(
                             background_repeat: BackgroundRepeat::Repeat,
                             background_origin: BackgroundOrigin::Padding,
                             transform: None,
+                            box_shadow: None,
                             nested_elements: item.elements.clone(),
                             y_offset: 0.0,
                             line_cross_size: 0.0,

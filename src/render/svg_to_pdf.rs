@@ -19,6 +19,7 @@ pub(crate) trait SvgImageObjectSink {
 pub(crate) struct SvgPdfResources<'a> {
     pub shadings: &'a mut Vec<ShadingEntry>,
     pub shading_counter: &'a mut usize,
+    pub ext_gstates: Option<&'a mut Vec<(String, f32)>>,
     pub image_sink: Option<&'a mut dyn SvgImageObjectSink>,
 }
 
@@ -27,6 +28,7 @@ impl<'a> SvgPdfResources<'a> {
         Self {
             shadings,
             shading_counter,
+            ext_gstates: None,
             image_sink: None,
         }
     }
@@ -37,6 +39,19 @@ impl<'a> SvgPdfResources<'a> {
 
     fn register_raster(&mut self, raw_image: &[u8]) -> Option<String> {
         self.image_sink.as_deref_mut()?.register_raster(raw_image)
+    }
+
+    /// Register an opacity ExtGState and return the generated name, or None
+    /// if ExtGState tracking isn't wired up (e.g. in tests).
+    ///
+    /// The name embeds the page-level ExtGState vector index, so it stays unique
+    /// even when multiple SVGs and HTML elements share the same page.
+    fn register_opacity(&mut self, opacity: f32) -> Option<String> {
+        let entries = self.ext_gstates.as_deref_mut()?;
+        let idx = entries.len();
+        let name = format!("GSsvg{idx}");
+        entries.push((name.clone(), opacity));
+        Some(name)
     }
 }
 
@@ -78,6 +93,7 @@ pub(crate) fn render_svg_tree_with_resources(
         font_family: None,
         font_bold: None,
         font_italic: None,
+        opacity: 1.0,
     };
     for node in &tree.children {
         render_node(
@@ -102,6 +118,8 @@ struct ResolvedStyle {
     font_family: Option<String>,
     font_bold: Option<bool>,
     font_italic: Option<bool>,
+    /// Accumulated (multiplicative) opacity from ancestor groups and self.
+    opacity: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -197,6 +215,10 @@ fn resolve_style(parent: ResolvedStyle, local: &SvgStyle) -> ResolvedStyle {
         other => other.clone(),
     };
     let stroke_width = local.stroke_width.unwrap_or(parent.stroke_width);
+    // SVG `opacity` on a group applies to the composited result; the most
+    // faithful rendering without offscreen buffers is to multiply the parent's
+    // opacity by the local one and apply the combined alpha at each leaf.
+    let opacity = (parent.opacity * local.opacity).clamp(0.0, 1.0);
     ResolvedStyle {
         color,
         fill,
@@ -206,6 +228,7 @@ fn resolve_style(parent: ResolvedStyle, local: &SvgStyle) -> ResolvedStyle {
         font_family: local.font_family.clone().or(parent.font_family),
         font_bold: local.font_bold.or(parent.font_bold),
         font_italic: local.font_italic.or(parent.font_italic),
+        opacity,
     }
 }
 
@@ -319,6 +342,13 @@ fn render_node(
                 );
             }
 
+            // Isolate opacity state in its own q/Q so it doesn't leak to siblings.
+            let opacity_wrapped = style.opacity < 1.0;
+            if opacity_wrapped {
+                out.push_str("q\n");
+                push_opacity_gstate(&style, resources, out);
+            }
+
             match &style.fill {
                 SvgPaint::Url(id) => {
                     out.push_str(&path);
@@ -359,6 +389,10 @@ fn render_node(
                 }
             }
 
+            if opacity_wrapped {
+                out.push_str("Q\n");
+            }
+
             // Close clip-path save state
             if style.clip_path.is_some() {
                 out.push_str("Q\n");
@@ -379,9 +413,17 @@ fn render_node(
                 return;
             }
 
+            let opacity_wrapped = style.opacity < 1.0;
+            if opacity_wrapped {
+                out.push_str("q\n");
+                push_opacity_gstate(&style, resources, out);
+            }
             apply_stroke_style(&style, out);
             out.push_str(&path);
             paint_stroke_only(&style, out);
+            if opacity_wrapped {
+                out.push_str("Q\n");
+            }
         }
         SvgNode::Image {
             x,
@@ -447,6 +489,12 @@ fn render_node(
                 );
             }
 
+            let opacity_wrapped = style.opacity < 1.0;
+            if opacity_wrapped {
+                out.push_str("q\n");
+                push_opacity_gstate(&style, resources, out);
+            }
+
             // Use SVG-explicit font_size if set, otherwise inherit from CSS context
             let fill = paint_to_rgb(&style.fill, style.color);
             let stroke = paint_to_rgb(&style.stroke, style.color);
@@ -487,6 +535,9 @@ fn render_node(
             let encoded = encode_pdf_text(content);
             out.push_str(&format!("({encoded}) Tj\n"));
             out.push_str("ET\n");
+            if opacity_wrapped {
+                out.push_str("Q\n");
+            }
             if clip_path.is_some() {
                 out.push_str("Q\n");
             }
@@ -604,6 +655,7 @@ fn render_clip_path(
         font_family: None,
         font_bold: None,
         font_italic: None,
+        opacity: 1.0,
     };
 
     for transform in &transforms {
@@ -1062,6 +1114,25 @@ fn apply_style(style: &ResolvedStyle, out: &mut String) {
         out.push_str(&format!("{r} {g} {b} rg\n"));
     }
     apply_stroke_style(style, out);
+}
+
+/// Emit `/GSxx gs` for the node's effective opacity when it's < 1.0.
+/// Returns `true` when a gs operator was emitted, so the caller can balance
+/// a surrounding `q ... Q` pair that isolates the opacity state.
+fn push_opacity_gstate(
+    style: &ResolvedStyle,
+    resources: &mut SvgPdfResources,
+    out: &mut String,
+) -> bool {
+    if style.opacity >= 1.0 {
+        return false;
+    }
+    if let Some(name) = resources.register_opacity(style.opacity) {
+        out.push_str(&format!("/{name} gs\n"));
+        true
+    } else {
+        false
+    }
 }
 
 fn apply_stroke_style(style: &ResolvedStyle, out: &mut String) {
@@ -2689,6 +2760,7 @@ mod tests {
         let mut resources = SvgPdfResources {
             shadings: &mut shadings,
             shading_counter: &mut shading_counter,
+            ext_gstates: None,
             image_sink: Some(&mut image_sink),
         };
 

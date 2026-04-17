@@ -456,6 +456,7 @@ mod tests {
             background_repeat: BackgroundRepeat::Repeat,
             background_origin: BackgroundOrigin::Padding,
             transform: None,
+            box_shadow: None,
             nested_elements: Vec::new(),
             y_offset: 0.0,
             line_cross_size: 0.0,
