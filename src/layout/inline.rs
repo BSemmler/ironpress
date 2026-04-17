@@ -324,6 +324,8 @@ pub(crate) fn layout_inline_block_group(
             background_origin: item.background_origin,
             transform: item.transform,
             nested_elements: Vec::new(),
+            y_offset: 0.0,
+            line_cross_size: 0.0,
         });
         x += item.width + item.margin_right;
         row_height = row_height.max(item.height);
@@ -357,7 +359,6 @@ pub(crate) fn layout_inline_block_group(
             background_repeat: BackgroundRepeat::Repeat,
             background_origin: BackgroundOrigin::Padding,
             align_items: crate::style::computed::AlignItems::Stretch,
-            wrap_container_content_height: None,
         });
     }
 }

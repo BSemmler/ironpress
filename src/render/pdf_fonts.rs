@@ -457,6 +457,8 @@ mod tests {
             background_origin: BackgroundOrigin::Padding,
             transform: None,
             nested_elements: Vec::new(),
+            y_offset: 0.0,
+            line_cross_size: 0.0,
         }
     }
 
@@ -919,7 +921,6 @@ mod tests {
             background_repeat: BackgroundRepeat::Repeat,
             background_origin: BackgroundOrigin::Padding,
             align_items: crate::style::computed::AlignItems::Stretch,
-            wrap_container_content_height: None,
         };
         let fonts: HashMap<String, TtfFont> = HashMap::new();
         let mut usage: BTreeMap<String, FontUsage> = BTreeMap::new();

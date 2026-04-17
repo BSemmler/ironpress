@@ -643,6 +643,29 @@ pub(crate) fn layout_flex_container(
         Some(min_h) => container_h.max(min_h),
         None => container_h,
     };
+    // Cross-axis inner size once height/min-height have been honored. For
+    // row direction with a single line this is what each item should
+    // stretch to (align-items: stretch) and what flex-end/center measure
+    // against — otherwise a tall `min-height` container collapses visually
+    // to the natural item height.
+    let inner_cross_size = (container_h - style.padding.top - style.padding.bottom).max(0.0);
+    if direction == FlexDirection::Row && lines.len() == 1 {
+        if let Some(line) = lines.first_mut() {
+            line.cross_size = line.cross_size.max(inner_cross_size);
+        }
+    }
+    // Recompute total_cross after possibly growing a single line.
+    let total_cross: f32 = match direction {
+        FlexDirection::Row => {
+            lines.iter().map(|l| l.cross_size).sum::<f32>()
+                + if lines.len() > 1 {
+                    (lines.len() - 1) as f32 * gap
+                } else {
+                    0.0
+                }
+        }
+        FlexDirection::Column => lines.iter().map(|l| l.cross_size).fold(0.0f32, f32::max),
+    };
     let bg = style
         .background_color
         .map(|color: crate::types::Color| color.to_f32_rgba());
@@ -779,6 +802,10 @@ pub(crate) fn layout_flex_container(
 
     // Position items within the flex container and emit them
     let mut cross_offset = 0.0;
+    // All flex cells across every line, merged into a single FlexRow for
+    // row direction. This keeps container borders/backgrounds around every
+    // wrapped line and keeps pagination flow correct.
+    let mut all_flex_cells: Vec<FlexCell> = Vec::new();
 
     for line in &lines {
         let line_items: Vec<usize> = line.item_indices.clone();
@@ -936,6 +963,8 @@ pub(crate) fn layout_flex_container(
                                 background_origin: BackgroundOrigin::Padding,
                                 transform: None,
                                 nested_elements: item.elements.clone(),
+                                y_offset: 0.0,
+                                line_cross_size: 0.0,
                             });
                             x += item.width + gap;
                             continue;
@@ -998,6 +1027,8 @@ pub(crate) fn layout_flex_container(
                             background_origin: BackgroundOrigin::Padding,
                             transform: None,
                             nested_elements: Vec::new(),
+                            y_offset: 0.0,
+                            line_cross_size: 0.0,
                         });
                         x += item.width + gap;
                         continue;
@@ -1051,6 +1082,8 @@ pub(crate) fn layout_flex_container(
                             transform: None,
                             nested_elements: Vec::new(),
                             natural_height: natural_h,
+                            y_offset: 0.0,
+                            line_cross_size: 0.0,
                         });
                     } else {
                         // Single non-TextBlock element (e.g. Container): store
@@ -1078,84 +1111,21 @@ pub(crate) fn layout_flex_container(
                             background_origin: BackgroundOrigin::Padding,
                             transform: None,
                             nested_elements: item.elements.clone(),
+                            y_offset: 0.0,
+                            line_cross_size: 0.0,
                         });
                     }
 
                     x += item.width + gap + extra_gap;
                 }
 
-                // For the first emitted row in a multi-line wrap, extend the
-                // background/border drawing to cover every wrapped line.
-                let wrap_container_content_height = if cross_offset == 0.0 && lines.len() > 1 {
-                    Some(total_cross)
-                } else {
-                    None
-                };
-                output.push(LayoutElement::FlexRow {
-                    cells: flex_cells,
-                    row_height: line.cross_size,
-                    margin_top: style.margin.top + cross_offset,
-                    margin_bottom: 0.0,
-                    background_color: if cross_offset == 0.0 { bg } else { None },
-                    container_width: block_w,
-                    padding_top: style.padding.top,
-                    padding_bottom: style.padding.bottom,
-                    padding_left: style.padding.left,
-                    padding_right: style.padding.right,
-                    border: if cross_offset == 0.0 {
-                        LayoutBorder::from_computed(&style.border)
-                    } else {
-                        LayoutBorder::default()
-                    },
-                    border_radius: style.border_radius,
-                    box_shadow: if cross_offset == 0.0 {
-                        style.box_shadow
-                    } else {
-                        None
-                    },
-                    background_gradient: if cross_offset == 0.0 {
-                        style.background_gradient.clone()
-                    } else {
-                        None
-                    },
-                    background_radial_gradient: if cross_offset == 0.0 {
-                        style.background_radial_gradient.clone()
-                    } else {
-                        None
-                    },
-                    background_svg: if cross_offset == 0.0 {
-                        background_svg_for_style(style)
-                    } else {
-                        None
-                    },
-                    background_blur_radius: if cross_offset == 0.0 {
-                        style.blur_radius
-                    } else {
-                        0.0
-                    },
-                    background_size: if cross_offset == 0.0 {
-                        style.background_size
-                    } else {
-                        BackgroundSize::Auto
-                    },
-                    background_position: if cross_offset == 0.0 {
-                        style.background_position
-                    } else {
-                        BackgroundPosition::default()
-                    },
-                    background_repeat: if cross_offset == 0.0 {
-                        style.background_repeat
-                    } else {
-                        BackgroundRepeat::Repeat
-                    },
-                    background_origin: if cross_offset == 0.0 {
-                        style.background_origin
-                    } else {
-                        BackgroundOrigin::Padding
-                    },
-                    align_items: align,
-                    wrap_container_content_height,
-                });
+                // Stamp each cell with its cross-axis position within the
+                // container so a single FlexRow can span every wrapped line.
+                for cell in flex_cells.iter_mut() {
+                    cell.y_offset = cross_offset;
+                    cell.line_cross_size = line.cross_size;
+                }
+                all_flex_cells.extend(flex_cells);
             }
             FlexDirection::Column => {
                 let _total_item_height: f32 = line_items.iter().map(|&i| items[i].height).sum();
@@ -1292,6 +1262,38 @@ pub(crate) fn layout_flex_container(
         }
 
         cross_offset += line.cross_size + gap;
+    }
+
+    // Emit a single FlexRow carrying every line's cells for row direction.
+    // The row's height is the container's inner cross size so pagination and
+    // the visual border both include every wrapped line. Each cell's own
+    // y_offset and line_cross_size handle per-line alignment internally.
+    if direction == FlexDirection::Row && !all_flex_cells.is_empty() {
+        let row_height = total_cross.max(inner_cross_size);
+        output.push(LayoutElement::FlexRow {
+            cells: all_flex_cells,
+            row_height,
+            margin_top: style.margin.top,
+            margin_bottom: 0.0,
+            background_color: bg,
+            container_width: block_w,
+            padding_top: style.padding.top,
+            padding_bottom: style.padding.bottom,
+            padding_left: style.padding.left,
+            padding_right: style.padding.right,
+            border: LayoutBorder::from_computed(&style.border),
+            border_radius: style.border_radius,
+            box_shadow: style.box_shadow,
+            background_gradient: style.background_gradient.clone(),
+            background_radial_gradient: style.background_radial_gradient.clone(),
+            background_svg: background_svg_for_style(style),
+            background_blur_radius: style.blur_radius,
+            background_size: style.background_size,
+            background_position: style.background_position,
+            background_repeat: style.background_repeat,
+            background_origin: style.background_origin,
+            align_items: align,
+        });
     }
 
     // Emit trailing margin (include bottom padding when bg spacer shifted y back)
