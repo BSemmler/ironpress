@@ -2191,6 +2191,8 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                             &prepared_custom_fonts,
                                             &mut page_ext_gstates,
                                             &mut bg_alpha_counter,
+                                            &mut page_shadings,
+                                            &mut shading_counter,
                                             *cont_pl + cont_border.left.width,
                                             *cont_pt + cont_border.top.width,
                                         );
@@ -2411,6 +2413,8 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         &prepared_custom_fonts,
                         &mut page_ext_gstates,
                         &mut bg_alpha_counter,
+                        &mut page_shadings,
+                        &mut shading_counter,
                         *c_pl + border.left.width,
                         *c_pt + border.top.width,
                     );
@@ -2839,6 +2843,8 @@ fn render_container_children(
     prepared_custom_fonts: &PreparedCustomFonts,
     page_ext_gstates: &mut Vec<(String, f32)>,
     bg_alpha_counter: &mut usize,
+    page_shadings: &mut Vec<ShadingEntry>,
+    shading_counter: &mut usize,
     abs_pad_left: f32,
     abs_pad_top: f32,
 ) {
@@ -2886,8 +2892,11 @@ fn render_container_children(
                 padding_top,
                 padding_bottom,
                 border,
+                border_radius: tb_border_radius,
                 block_height,
                 background_color,
+                background_gradient: tb_bg_gradient,
+                background_radial_gradient: tb_bg_radial,
                 text_align,
                 float: tb_float,
                 position,
@@ -3005,6 +3014,66 @@ fn render_container_children(
                     }
                 }
 
+                // Draw linear gradient background
+                if let Some(gradient) = tb_bg_gradient {
+                    let bg_x = render_x;
+                    let bg_y = render_y - child_h;
+                    if *tb_border_radius > 0.0 {
+                        content.push_str("q\n");
+                        content.push_str(&rounded_rect_path(
+                            bg_x,
+                            bg_y,
+                            render_w,
+                            child_h,
+                            *tb_border_radius,
+                        ));
+                        content.push_str("W n\n");
+                    }
+                    render_linear_gradient(
+                        content,
+                        gradient,
+                        bg_x,
+                        bg_y,
+                        render_w,
+                        child_h,
+                        page_shadings,
+                        shading_counter,
+                    );
+                    if *tb_border_radius > 0.0 {
+                        content.push_str("Q\n");
+                    }
+                }
+
+                // Draw radial gradient background
+                if let Some(gradient) = tb_bg_radial {
+                    let bg_x = render_x;
+                    let bg_y = render_y - child_h;
+                    if *tb_border_radius > 0.0 {
+                        content.push_str("q\n");
+                        content.push_str(&rounded_rect_path(
+                            bg_x,
+                            bg_y,
+                            render_w,
+                            child_h,
+                            *tb_border_radius,
+                        ));
+                        content.push_str("W n\n");
+                    }
+                    render_radial_gradient(
+                        content,
+                        gradient,
+                        bg_x,
+                        bg_y,
+                        render_w,
+                        child_h,
+                        page_shadings,
+                        shading_counter,
+                    );
+                    if *tb_border_radius > 0.0 {
+                        content.push_str("Q\n");
+                    }
+                }
+
                 // Draw child borders
                 if border.has_any() {
                     let bx1 = render_x;
@@ -3076,6 +3145,8 @@ fn render_container_children(
             LayoutElement::Container {
                 children: nested_kids,
                 background_color,
+                background_gradient,
+                background_radial_gradient,
                 border,
                 border_radius: cont_br,
                 padding_top,
@@ -3103,7 +3174,14 @@ fn render_container_children(
                     .sum();
                 let nk_content_h =
                     padding_top + nk_children_h + padding_bottom + border.vertical_width();
-                let nk_total_h = nk_block_height.map_or(nk_content_h, |h| nk_content_h.max(h));
+                // When an explicit block_height is given, use it directly so that
+                // overflow:hidden clips to the declared box (rather than expanding
+                // to fit oversized children and leaving them visible).
+                let nk_total_h = if *overflow == Overflow::Hidden {
+                    nk_block_height.unwrap_or(nk_content_h)
+                } else {
+                    nk_block_height.map_or(nk_content_h, |h| nk_content_h.max(h))
+                };
 
                 // Draw background with proper alpha support
                 if let Some((r, g, b, a)) = background_color {
@@ -3123,6 +3201,58 @@ fn render_container_children(
                     ));
                     if needs_alpha {
                         content.push_str("/GSDefault gs\n");
+                    }
+                }
+
+                // Draw linear gradient
+                if let Some(gradient) = background_gradient {
+                    let bg_x = nk_x;
+                    let bg_y = y - nk_total_h;
+                    if *cont_br > 0.0 {
+                        content.push_str("q\n");
+                        content.push_str(&rounded_rect_path(
+                            bg_x, bg_y, nk_w, nk_total_h, *cont_br,
+                        ));
+                        content.push_str("W n\n");
+                    }
+                    render_linear_gradient(
+                        content,
+                        gradient,
+                        bg_x,
+                        bg_y,
+                        nk_w,
+                        nk_total_h,
+                        page_shadings,
+                        shading_counter,
+                    );
+                    if *cont_br > 0.0 {
+                        content.push_str("Q\n");
+                    }
+                }
+
+                // Draw radial gradient
+                if let Some(gradient) = background_radial_gradient {
+                    let bg_x = nk_x;
+                    let bg_y = y - nk_total_h;
+                    if *cont_br > 0.0 {
+                        content.push_str("q\n");
+                        content.push_str(&rounded_rect_path(
+                            bg_x, bg_y, nk_w, nk_total_h, *cont_br,
+                        ));
+                        content.push_str("W n\n");
+                    }
+                    render_radial_gradient(
+                        content,
+                        gradient,
+                        bg_x,
+                        bg_y,
+                        nk_w,
+                        nk_total_h,
+                        page_shadings,
+                        shading_counter,
+                    );
+                    if *cont_br > 0.0 {
+                        content.push_str("Q\n");
                     }
                 }
 
@@ -3210,6 +3340,8 @@ fn render_container_children(
                     prepared_custom_fonts,
                     page_ext_gstates,
                     bg_alpha_counter,
+                    page_shadings,
+                    shading_counter,
                     *padding_left + border.left.width,
                     *padding_top + border.top.width,
                 );
@@ -3459,6 +3591,8 @@ fn render_container_children(
                             prepared_custom_fonts,
                             page_ext_gstates,
                             bg_alpha_counter,
+                            page_shadings,
+                            shading_counter,
                             0.0, // flex cells don't have separate padding for abs children
                             0.0,
                         );
