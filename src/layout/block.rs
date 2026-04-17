@@ -50,12 +50,19 @@ pub(crate) fn layout_block_element(
     // Block elements without explicit width shrink by their horizontal margins.
     let margin_h = style.margin.left + style.margin.right;
     let mut block_w = available_width;
-    if let Some(pct) = style.percentage_sizing.width {
-        // Percentage width resolves against the actual layout parent width,
-        // not the style-time parent width stored in style.width.
-        block_w = (pct / 100.0 * available_width).min(available_width);
-    } else if let Some(w) = style.width {
+    if let Some(w) = style.width {
+        // style.width is the resolved width — for percentages this was already
+        // computed against the correct layout parent at style time (in
+        // particular, flex children pre-resolve percentages against the flex
+        // container inner width, which differs from the per-slot
+        // `available_width` passed to this block layout). Prefer it over the
+        // late-bound `percentage_sizing.width` hint when both are set.
         block_w = w.min(available_width);
+    } else if let Some(pct) = style.percentage_sizing.width {
+        // Fallback: style.width was not resolved at style time (for example,
+        // because the style-time parent width was unknown). Resolve the
+        // late-bound percentage against the actual layout parent width.
+        block_w = (pct / 100.0 * available_width).min(available_width);
     } else if margin_h > 0.0 {
         block_w = (available_width - margin_h).max(0.0);
     }
