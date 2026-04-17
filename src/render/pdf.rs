@@ -516,6 +516,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                             &mut page_images,
                             &mut page_shadings,
                             &mut shading_counter,
+                            Some(&mut page_ext_gstates),
                             BackgroundPaintContext::new(
                                 SvgViewportBox::new(ref_x, ref_y, ref_w, ref_h),
                                 SvgViewportBox::new(
@@ -1313,6 +1314,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                             &mut page_images,
                             &mut page_shadings,
                             &mut shading_counter,
+                            Some(&mut page_ext_gstates),
                             BackgroundPaintContext::new(
                                 SvgViewportBox::new(ref_x, ref_y, ref_w, ref_h),
                                 SvgViewportBox::new(
@@ -1670,6 +1672,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                 &mut page_images,
                                 &mut page_shadings,
                                 &mut shading_counter,
+                                Some(&mut page_ext_gstates),
                                 BackgroundPaintContext::new(
                                     SvgViewportBox::new(ref_x, ref_y, ref_w, ref_h),
                                     SvgViewportBox::new(bg_x, bg_y, cell.width, cell_render_h),
@@ -4322,6 +4325,7 @@ fn render_svg_background(
     page_images: &mut Vec<ImageRef>,
     shadings: &mut Vec<ShadingEntry>,
     shading_counter: &mut usize,
+    mut ext_gstates: Option<&mut Vec<(String, f32)>>,
     paint: BackgroundPaintContext,
 ) {
     // SVG image resources frequently omit explicit width/height and only provide
@@ -4522,7 +4526,7 @@ fn render_svg_background(
                     let mut resources = crate::render::svg_to_pdf::SvgPdfResources {
                         shadings,
                         shading_counter,
-                        ext_gstates: None,
+                        ext_gstates: ext_gstates.as_deref_mut(),
                         image_sink: Some(&mut image_sink),
                     };
                     crate::render::svg_to_pdf::render_svg_tree_with_resources(
@@ -7966,6 +7970,7 @@ mod tests {
             &mut page_images,
             &mut shadings,
             &mut shading_counter,
+            None,
             BackgroundPaintContext::new(
                 SvgViewportBox::new(0.0, 0.0, 200.0, 100.0),
                 SvgViewportBox::new(0.0, 0.0, 200.0, 100.0),
@@ -8028,6 +8033,7 @@ mod tests {
             &mut page_images,
             &mut shadings,
             &mut shading_counter,
+            None,
             BackgroundPaintContext::new(
                 SvgViewportBox::new(0.0, 0.0, 200.0, 100.0),
                 SvgViewportBox::new(0.0, 0.0, 200.0, 100.0),
@@ -8086,6 +8092,7 @@ mod tests {
             &mut page_images,
             &mut shadings,
             &mut shading_counter,
+            None,
             BackgroundPaintContext::new(
                 SvgViewportBox::new(20.0, 10.0, 160.0, 80.0),
                 SvgViewportBox::new(0.0, 0.0, 200.0, 100.0),
