@@ -1169,14 +1169,11 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     background_repeat: flex_bg_repeat,
                     background_origin: flex_bg_origin,
                     align_items,
-                    wrap_container_content_height,
                     ..
                 } => {
                     let row_y = page_size.height - margin.top - y_pos;
-                    let effective_content_height =
-                        wrap_container_content_height.unwrap_or(*row_height);
                     let full_height = padding_top
-                        + effective_content_height
+                        + row_height
                         + padding_bottom
                         + border.vertical_width();
 
@@ -1423,20 +1420,29 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     for cell in cells {
                         let cell_x = margin.left + padding_left + cell.x_offset;
                         let cell_inner_w = cell.width - cell.padding_left - cell.padding_right;
+                        // For single-line rows `line_cross_size == row_height`.
+                        // For multi-line wrap, each cell's line_cross_size is its
+                        // own flex line height, so alignment is per-line.
+                        let line_cross = if cell.line_cross_size > 0.0 {
+                            cell.line_cross_size
+                        } else {
+                            *row_height
+                        };
+                        let cell_y_origin = cell.y_offset;
 
                         // Compute per-cell height and vertical offset based on align-items.
-                        // For stretch: use full row_height (default CSS behavior).
+                        // For stretch: use the line's cross size (default CSS behavior).
                         // For flex-start/center/flex-end: use the cell's natural_height.
                         let (cell_render_h, cell_y_shift) = match align_items {
-                            AlignItems::Stretch => (*row_height, 0.0),
-                            AlignItems::FlexStart => (cell.natural_height, 0.0),
+                            AlignItems::Stretch => (line_cross, cell_y_origin),
+                            AlignItems::FlexStart => (cell.natural_height, cell_y_origin),
                             AlignItems::FlexEnd => {
                                 let h = cell.natural_height;
-                                (h, *row_height - h)
+                                (h, cell_y_origin + line_cross - h)
                             }
                             AlignItems::Center => {
                                 let h = cell.natural_height;
-                                (h, (*row_height - h) / 2.0)
+                                (h, cell_y_origin + (line_cross - h) / 2.0)
                             }
                         };
 
@@ -1444,7 +1450,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                         let cell_needs_transform = cell.transform.is_some();
                         if let Some(t) = &cell.transform {
                             let cx = cell_x + cell.width * 0.5;
-                            let cy = text_area_top - *row_height * 0.5;
+                            let cy = text_area_top - cell_y_origin - line_cross * 0.5;
                             content.push_str("q\n");
                             match t {
                                 crate::style::computed::Transform::Rotate(deg) => {
