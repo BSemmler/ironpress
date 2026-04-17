@@ -1486,6 +1486,25 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                             }
                         }
 
+                        // Draw per-cell box-shadow (e.g. inline-block items
+                        // with `box-shadow`). We draw it before the background
+                        // so the shadow sits behind the cell.
+                        if let Some(shadow) = &cell.box_shadow {
+                            let cell_bg_x = margin.left + padding_left + cell.x_offset;
+                            let cell_bg_y = text_area_top - cell_y_shift - cell_render_h;
+                            render_box_shadow(
+                                &mut content,
+                                shadow,
+                                cell_bg_x,
+                                cell_bg_y,
+                                cell.width,
+                                cell_render_h,
+                                cell.border_radius,
+                                &mut page_ext_gstates,
+                                &mut bg_alpha_counter,
+                            );
+                        }
+
                         // Draw cell background
                         if let Some((r, g, b, a)) = cell.background_color {
                             let bg_x = margin.left + padding_left + cell.x_offset;
@@ -2018,6 +2037,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                                                 crate::render::svg_to_pdf::SvgPdfResources {
                                                     shadings: &mut page_shadings,
                                                     shading_counter: &mut shading_counter,
+                                                    ext_gstates: Some(&mut page_ext_gstates),
                                                     image_sink: Some(&mut image_sink),
                                                 };
                                             crate::render::svg_to_pdf::render_svg_tree_with_resources(
@@ -2470,6 +2490,7 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                             let mut resources = crate::render::svg_to_pdf::SvgPdfResources {
                                 shadings: &mut page_shadings,
                                 shading_counter: &mut shading_counter,
+                                ext_gstates: Some(&mut page_ext_gstates),
                                 image_sink: Some(&mut image_sink),
                             };
                             crate::render::svg_to_pdf::render_svg_tree_with_resources(
@@ -3237,6 +3258,7 @@ fn render_container_children(
                         let mut res = crate::render::svg_to_pdf::SvgPdfResources {
                             shadings: &mut Vec::new(),
                             shading_counter: &mut 0,
+                            ext_gstates: Some(page_ext_gstates),
                             image_sink: None,
                         };
                         crate::render::svg_to_pdf::render_svg_tree_with_resources(
@@ -3248,6 +3270,7 @@ fn render_container_children(
                     let mut res = crate::render::svg_to_pdf::SvgPdfResources {
                         shadings: &mut Vec::new(),
                         shading_counter: &mut 0,
+                        ext_gstates: Some(page_ext_gstates),
                         image_sink: None,
                     };
                     crate::render::svg_to_pdf::render_svg_tree_with_resources(
@@ -4365,6 +4388,7 @@ fn render_svg_background(
                     let mut resources = crate::render::svg_to_pdf::SvgPdfResources {
                         shadings,
                         shading_counter,
+                        ext_gstates: None,
                         image_sink: Some(&mut image_sink),
                     };
                     crate::render::svg_to_pdf::render_svg_tree_with_resources(
