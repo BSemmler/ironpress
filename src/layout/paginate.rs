@@ -177,17 +177,21 @@ pub(crate) fn paginate(
 ) -> Vec<Page> {
     let mut pages: Vec<Page> = Vec::new();
     let mut current_elements: Vec<(f32, LayoutElement)> = Vec::new();
-    let mut y = 0.0;
+    // Page 1 starts with body/html margin-top applied; continuation pages
+    // start flush against the page margin (Chrome's print-model: body margin
+    // opens the document, not every page).
+    let mut y: f32 = root_margin_top;
 
     // Track active float regions for simplified float/clear behavior
     let mut left_floats: Vec<FloatRegion> = Vec::new();
     let mut right_floats: Vec<FloatRegion> = Vec::new();
     let mut prev_margin_bottom: f32 = 0.0;
     // CSS margin-collapse-through-root: the first in-flow block on a page has
-    // its margin-top collapse with the body margin (which is already baked
-    // into the page margin via effective_margin in lib.rs). Strip it so the
-    // first ink lands where Chrome places it in print mode.
+    // its margin-top collapse with the body margin on page 1. On continuation
+    // pages (after page break), the first block's margin-top applies as-is
+    // because body is mid-flow and doesn't collapse with the viewport anymore.
     let mut first_on_page: bool = true;
+    let mut on_first_page: bool = true;
 
     // Collect synthetic full-page background elements that should be repeated
     // across every page during pagination.
@@ -300,6 +304,7 @@ pub(crate) fn paginate(
                 y = 0.0;
                 prev_margin_bottom = 0.0;
                 first_on_page = true;
+                on_first_page = false;
                 left_floats.clear();
                 right_floats.clear();
                 advance_positioned_ancestors_after_page_break(
@@ -437,13 +442,13 @@ pub(crate) fn paginate(
         } else {
             margin_top_val + prev_margin_bottom
         };
-        // CSS margin collapse through the root: the first in-flow block on a
-        // page has its margin-top collapse with body/html — `max(body, first)`
-        // in CSS terms. lib.rs already folded `root_margin_top` into the page
-        // margin, so the *extra* to add here is `first - root` (clamped at 0).
-        // When first <= root, the first ink sits at `page_top + root` + font
-        // ascent, matching Chrome's print behavior.
-        let collapsed_margin = if first_on_page {
+        // CSS margin collapse through the root applies ONLY on page 1 (where
+        // body opens). On page 1, the first block's margin-top collapses with
+        // body.margin.top: since paginate pre-seeded `y = root_margin_top`,
+        // the *extra* to add is `(block_mt - root_mt).max(0)`. On continuation
+        // pages (page 2+), body is already mid-flow — no collapse with root,
+        // and no body margin-top at all.
+        let collapsed_margin = if first_on_page && on_first_page {
             (collapsed_margin - root_margin_top).max(0.0)
         } else {
             collapsed_margin
@@ -489,6 +494,7 @@ pub(crate) fn paginate(
                 current_elements.push(bg.clone());
             }
             y = 0.0;
+            on_first_page = false;
             // prev_margin_bottom and first_on_page are reset at the bottom of
             // this iteration (float or normal-flow branch overwrites both).
             left_floats.clear();
@@ -515,13 +521,10 @@ pub(crate) fn paginate(
         }
 
         // After a mid-loop page break, the current element is now the first
-        // in-flow block on the new page (unless preceded by re-emitted thead
-        // rows). Collapse its margin-top through body/html the same way.
-        let effective_margin_top = if page_broke_mid_loop && pending_table_headers.is_empty() {
-            (margin_top_val - root_margin_top).max(0.0)
-        } else {
-            margin_top_val
-        };
+        // in-flow block on a continuation page. Its margin-top applies as-is
+        // (no collapse with root — body is mid-flow across the page break).
+        let effective_margin_top = margin_top_val;
+        let _ = page_broke_mid_loop;
 
         // Handle floated elements (floats don't participate in margin collapsing)
         if elem_float != Float::None {
