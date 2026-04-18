@@ -170,7 +170,11 @@ pub(crate) fn table_row_content_width(element: &LayoutElement) -> f32 {
     }
 }
 
-pub(crate) fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec<Page> {
+pub(crate) fn paginate(
+    elements: Vec<LayoutElement>,
+    content_height: f32,
+    root_margin_top: f32,
+) -> Vec<Page> {
     let mut pages: Vec<Page> = Vec::new();
     let mut current_elements: Vec<(f32, LayoutElement)> = Vec::new();
     let mut y = 0.0;
@@ -179,6 +183,11 @@ pub(crate) fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec
     let mut left_floats: Vec<FloatRegion> = Vec::new();
     let mut right_floats: Vec<FloatRegion> = Vec::new();
     let mut prev_margin_bottom: f32 = 0.0;
+    // CSS margin-collapse-through-root: the first in-flow block on a page has
+    // its margin-top collapse with the body margin (which is already baked
+    // into the page margin via effective_margin in lib.rs). Strip it so the
+    // first ink lands where Chrome places it in print mode.
+    let mut first_on_page: bool = true;
 
     // Collect synthetic full-page background elements that should be repeated
     // across every page during pagination.
@@ -290,6 +299,7 @@ pub(crate) fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec
                 }
                 y = 0.0;
                 prev_margin_bottom = 0.0;
+                first_on_page = true;
                 left_floats.clear();
                 right_floats.clear();
                 advance_positioned_ancestors_after_page_break(
@@ -427,6 +437,17 @@ pub(crate) fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec
         } else {
             margin_top_val + prev_margin_bottom
         };
+        // CSS margin collapse through the root: the first in-flow block on a
+        // page has its margin-top collapse with body/html — `max(body, first)`
+        // in CSS terms. lib.rs already folded `root_margin_top` into the page
+        // margin, so the *extra* to add here is `first - root` (clamped at 0).
+        // When first <= root, the first ink sits at `page_top + root` + font
+        // ascent, matching Chrome's print behavior.
+        let collapsed_margin = if first_on_page {
+            (collapsed_margin - root_margin_top).max(0.0)
+        } else {
+            collapsed_margin
+        };
         let margin_top_val = collapsed_margin;
         let element_height = margin_top_val + content_h_val + margin_bottom_val;
 
@@ -457,7 +478,8 @@ pub(crate) fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec
             continue;
         }
 
-        if y + element_height > content_height && y > 0.0 {
+        let page_broke_mid_loop = y + element_height > content_height && y > 0.0;
+        if page_broke_mid_loop {
             let consumed_height = y;
             pages.push(Page {
                 elements: std::mem::take(&mut current_elements),
@@ -467,7 +489,8 @@ pub(crate) fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec
                 current_elements.push(bg.clone());
             }
             y = 0.0;
-            prev_margin_bottom = 0.0;
+            // prev_margin_bottom and first_on_page are reset at the bottom of
+            // this iteration (float or normal-flow branch overwrites both).
             left_floats.clear();
             right_floats.clear();
             advance_positioned_ancestors_after_page_break(
@@ -491,10 +514,11 @@ pub(crate) fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec
             }
         }
 
-        // After potential page break, recompute effective margin_top
-        // (on a fresh page, prev_margin_bottom is 0 so no collapsing needed).
-        let effective_margin_top = if prev_margin_bottom == 0.0 {
-            collapsed_margin
+        // After a mid-loop page break, the current element is now the first
+        // in-flow block on the new page (unless preceded by re-emitted thead
+        // rows). Collapse its margin-top through body/html the same way.
+        let effective_margin_top = if page_broke_mid_loop && pending_table_headers.is_empty() {
+            (margin_top_val - root_margin_top).max(0.0)
         } else {
             margin_top_val
         };
@@ -515,6 +539,7 @@ pub(crate) fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec
             }
             current_elements.push((y, element));
             prev_margin_bottom = 0.0;
+            first_on_page = false;
             continue;
         }
 
@@ -537,6 +562,7 @@ pub(crate) fn paginate(elements: Vec<LayoutElement>, content_height: f32) -> Vec
         current_elements.push((effective_y, element));
         y += content_h_val;
         prev_margin_bottom = margin_bottom_val;
+        first_on_page = false;
     }
 
     if !current_elements.is_empty() {

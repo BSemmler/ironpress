@@ -635,8 +635,9 @@ pub fn layout_with_rules_and_fonts(
         &mut env,
     );
 
-    // Then paginate
-    super::paginate::paginate(elements, content_height)
+    // Then paginate. Pass the body/html margin-top so the first in-flow block
+    // on each page can collapse through the root (Chrome parity).
+    super::paginate::paginate(elements, content_height, parent_style.margin.top)
 }
 
 /// Flatten a list of DOM nodes into layout elements.
@@ -4457,6 +4458,7 @@ mod tests {
                 make_block(Position::Static, 0, false, 30.0),
             ],
             40.0,
+            0.0,
         );
 
         assert_eq!(pages.len(), 2);
@@ -4580,6 +4582,7 @@ mod tests {
         let pages = crate::layout::paginate::paginate(
             vec![make_block(-1, true), make_block(-2, false)],
             200.0,
+            0.0,
         );
 
         match &pages[0].elements[0].1 {
