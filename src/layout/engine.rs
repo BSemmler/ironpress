@@ -566,14 +566,14 @@ pub fn layout_with_rules_and_fonts(
             padding_left: 0.0,
             padding_right: 0.0,
             border: LayoutBorder::default(),
-            block_width: Some(page_size.width),
-            block_height: Some(page_size.height),
+            block_width: Some(available_width),
+            block_height: Some(content_height),
             opacity: 1.0,
             float: Float::None,
             clear: Clear::None,
             position: Position::Absolute,
-            offset_top: -margin.top,
-            offset_left: -margin.left,
+            offset_top: 0.0,
+            offset_left: 0.0,
             offset_bottom: 0.0,
             offset_right: 0.0,
             containing_block: None,
@@ -5666,8 +5666,14 @@ mod tests {
         {
             assert_eq!(tree.width, 20.0);
             assert_eq!(tree.height, 10.0);
-            assert!((*width - PageSize::A4.width).abs() < 0.1);
-            assert!((*height - PageSize::A4.height).abs() < 0.1);
+            // Body/root background is confined to the content area (page minus margins),
+            // matching Chrome's print behavior which surrounds the body bg with a
+            // white page margin frame.
+            let margin = Margin::default();
+            let expected_width = PageSize::A4.width - margin.left - margin.right;
+            let expected_height = PageSize::A4.height - margin.top - margin.bottom;
+            assert!((*width - expected_width).abs() < 0.1);
+            assert!((*height - expected_height).abs() < 0.1);
         } else {
             panic!("Expected a repeat-on-each-page SVG background block");
         }
