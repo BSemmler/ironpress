@@ -187,7 +187,8 @@ pub(crate) fn collapse_margins_through_parent(
     border_top: f32,
     border_bottom: f32,
 ) {
-    if padding_top == 0.0 && border_top == 0.0
+    if padding_top == 0.0
+        && border_top == 0.0
         && let Some(i) = first_in_flow_idx(children)
     {
         let child_mt = take_margin_top(&mut children[i]);
@@ -195,7 +196,8 @@ pub(crate) fn collapse_margins_through_parent(
             *container_margin_top = child_mt;
         }
     }
-    if padding_bottom == 0.0 && border_bottom == 0.0
+    if padding_bottom == 0.0
+        && border_bottom == 0.0
         && let Some(i) = last_in_flow_idx(children)
     {
         let child_mb = take_margin_bottom(&mut children[i]);

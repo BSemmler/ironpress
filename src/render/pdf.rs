@@ -4775,6 +4775,7 @@ fn render_box_shadow(
 /// Call this AFTER the element's background so the shadow isn't painted
 /// over. The outset variant (render_box_shadow) is called before the
 /// background.
+#[allow(clippy::too_many_arguments)]
 fn render_box_shadow_inset(
     content: &mut String,
     shadow: &crate::style::computed::BoxShadow,
@@ -4799,8 +4800,14 @@ fn render_box_shadow_inset(
     // Save gfx state, clip to box path.
     content.push_str("q\n");
     if border_radius > 0.5 {
-        content.push_str(&rounded_rect_path(box_x, box_y_bottom, box_w, box_h, border_radius));
-        content.push_str("\n");
+        content.push_str(&rounded_rect_path(
+            box_x,
+            box_y_bottom,
+            box_w,
+            box_h,
+            border_radius,
+        ));
+        content.push('\n');
     } else {
         content.push_str(&format!("{box_x} {box_y_bottom} {box_w} {box_h} re\n"));
     }

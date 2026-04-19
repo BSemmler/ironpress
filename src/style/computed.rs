@@ -2281,10 +2281,7 @@ pub(crate) fn apply_style_map(style: &mut ComputedStyle, map: &StyleMap, parent:
             // clamps to 100% at layout time. The percentage_sizing.width
             // hint (set below) is the correct late-bound fallback.
             let is_width_prop = matches!(prop_name, "width" | "max-width" | "min-width");
-            if is_width_prop
-                && !parent_width_known
-                && matches!(val, CssValue::Percentage(_))
-            {
+            if is_width_prop && !parent_width_known && matches!(val, CssValue::Percentage(_)) {
                 continue;
             }
             match val {
