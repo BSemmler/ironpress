@@ -42,11 +42,8 @@ pub(crate) fn reorder_runs_bidi(runs: &[TextRun], paragraph_rtl: bool) -> Vec<Te
 
     // Check if purely LTR — return unchanged
     if vis_ranges.len() == 1
-        && vis_ranges[0]
-            .start
-            .lt(&vis_levels.len())
-            .then(|| vis_levels[vis_ranges[0].start].is_ltr())
-            .unwrap_or(false)
+        && vis_ranges[0].start < vis_levels.len()
+        && vis_levels[vis_ranges[0].start].is_ltr()
     {
         return runs.to_vec();
     }
@@ -66,11 +63,8 @@ pub(crate) fn reorder_runs_bidi(runs: &[TextRun], paragraph_rtl: bool) -> Vec<Te
     for byte_range in vis_ranges.iter() {
         // Each visual run's characters remain in *logical* order inside the
         // run — the shaper (rustybuzz) will flip RTL glyphs itself. Only the
-        // *order of runs* is visual (left-to-right on the page).
-        let _level = vis_levels
-            .get(byte_range.start)
-            .copied()
-            .unwrap_or_else(|| if paragraph_rtl { Level::rtl() } else { Level::ltr() });
+        // *order of runs* is visual (left-to-right on the page), so we emit
+        // runs in the order `visual_runs` gives them.
         // Find chars in this byte range (already in logical order).
         let segment_chars: Vec<(char, usize)> = char_info
             .iter()
