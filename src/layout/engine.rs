@@ -735,7 +735,8 @@ fn flatten_nodes(
                             parent_style.font_size,
                             resolved_line_height_factor(parent_style, env.fonts),
                             parent_style.overflow_wrap,
-                        ),
+                        )
+                        .with_rtl(parent_style.direction_rtl),
                         env.fonts,
                     );
                     if !lines.is_empty() {
@@ -1137,7 +1138,8 @@ pub(crate) fn flatten_element(
                     style.font_size,
                     resolved_line_height_factor(&style, env.fonts),
                     style.overflow_wrap,
-                ),
+                )
+                .with_rtl(style.direction_rtl),
                 env.fonts,
             );
         }
@@ -1291,7 +1293,8 @@ pub(crate) fn flatten_element(
                 style.font_size,
                 resolved_line_height_factor(&style, env.fonts),
                 style.overflow_wrap,
-            ),
+            )
+            .with_rtl(style.direction_rtl),
             env.fonts,
         );
 
@@ -1611,6 +1614,7 @@ pub(crate) fn flatten_element(
             );
         }
 
+        let runs_before_inline = runs.len();
         collect_text_runs(
             &el.children,
             &style,
@@ -1620,6 +1624,20 @@ pub(crate) fn flatten_element(
             env.fonts,
             ancestors,
         );
+
+        // "Loose" list items (Markdown with blank lines between items) wrap each
+        // item's content in a <p>. When the <li> has no direct inline content
+        // but its first block child is a <p>, inline that <p>'s runs so the
+        // marker sits on the same baseline as the first line of text (matching
+        // Chrome), and apply the <p>'s vertical margins on the combined block
+        // so consecutive loose items are separated as paragraphs. Gated on
+        // <li> to keep the hot path (nested blocks) free of extra stack.
+        let (consumed_p_idx, extra_margin_top, extra_margin_bottom) =
+            if el.tag == HtmlTag::Li && runs.len() == runs_before_inline {
+                inline_loose_list_p(el, &style, &child_ancestors, env, &mut runs)
+            } else {
+                (None, 0.0, 0.0)
+            };
 
         let block_heading_level = heading_level(el.tag);
 
@@ -1631,7 +1649,8 @@ pub(crate) fn flatten_element(
                     style.font_size,
                     resolved_line_height_factor(&style, env.fonts),
                     style.overflow_wrap,
-                ),
+                )
+                .with_rtl(style.direction_rtl),
                 env.fonts,
             );
             let BackgroundFields {
@@ -1646,8 +1665,8 @@ pub(crate) fn flatten_element(
             } = BackgroundFields::from_style(&style);
             output.push(LayoutElement::TextBlock {
                 lines,
-                margin_top: style.margin.top,
-                margin_bottom: style.margin.bottom,
+                margin_top: style.margin.top + extra_margin_top,
+                margin_bottom: style.margin.bottom + extra_margin_bottom,
                 text_align: style.text_align,
                 background_color: None,
                 padding_top: style.padding.top,
@@ -1700,7 +1719,12 @@ pub(crate) fn flatten_element(
             .filter(|c| matches!(c, DomNode::Element(_)))
             .count();
         let mut child_el_idx = 0;
-        for child in &el.children {
+        for (raw_idx, child) in el.children.iter().enumerate() {
+            if Some(raw_idx) == consumed_p_idx {
+                // This <p> was inlined into the li's TextBlock above — skip.
+                child_el_idx += 1;
+                continue;
+            }
             if let DomNode::Element(child_el) = child {
                 if child_el.tag == HtmlTag::Ul || child_el.tag == HtmlTag::Ol {
                     let child_ctx = layout_ctx
@@ -1779,6 +1803,69 @@ pub(crate) fn flatten_element(
         after_style,
         env,
     );
+}
+
+/// Extracted helper for the loose-list fix (#140): when an `<li>` has no
+/// direct inline content and its first block child is a `<p>`, inline that
+/// `<p>`'s runs into the li's TextBlock and return the `<p>`'s margins +
+/// raw child index so the caller can skip re-emitting it as a block.
+///
+/// Isolated into its own function so the extra locals (SelectorContext,
+/// ComputedStyle, class list, etc.) are only paid for on the `<li>` path,
+/// not on every recursive `flatten_element` frame — deep nested blocks are
+/// otherwise stack-sensitive.
+fn inline_loose_list_p(
+    el: &ElementNode,
+    parent_style: &ComputedStyle,
+    child_ancestors: &[AncestorInfo],
+    env: &mut LayoutEnv,
+    runs: &mut Vec<TextRun>,
+) -> (Option<usize>, f32, f32) {
+    let li_child_el_count = el
+        .children
+        .iter()
+        .filter(|c| matches!(c, DomNode::Element(_)))
+        .count();
+    let mut child_el_ordinal = 0usize;
+    for (raw_idx, child) in el.children.iter().enumerate() {
+        if let DomNode::Element(child_el) = child {
+            if child_el.tag == HtmlTag::P {
+                let p_cls: Vec<&str> = child_el.class_list();
+                let p_selector_ctx = SelectorContext {
+                    ancestors: child_ancestors.to_vec(),
+                    child_index: child_el_ordinal,
+                    sibling_count: li_child_el_count,
+                    preceding_siblings: Vec::new(),
+                };
+                let p_style = compute_style_with_context(
+                    child_el.tag,
+                    child_el.style_attr(),
+                    parent_style,
+                    env.rules,
+                    child_el.tag_name(),
+                    &p_cls,
+                    child_el.id(),
+                    &child_el.attributes,
+                    &p_selector_ctx,
+                );
+                collect_text_runs(
+                    &child_el.children,
+                    &p_style,
+                    runs,
+                    None,
+                    env.rules,
+                    env.fonts,
+                    child_ancestors,
+                );
+                return (Some(raw_idx), p_style.margin.top, p_style.margin.bottom);
+            }
+            child_el_ordinal += 1;
+            if recurses_as_layout_child(child_el.tag) {
+                break;
+            }
+        }
+    }
+    (None, 0.0, 0.0)
 }
 
 /// Dispatch an element to the appropriate layout function based on its
