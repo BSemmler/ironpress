@@ -210,6 +210,14 @@ std::fs::write("output.pdf", pdf).unwrap();
 2. Phase 2: CSS support
 3. Phase 3: Advanced features
 
+## Loose List
+
+- First item with some content
+  spanning two lines.
+
+- Second item after a blank line.
+  Markers sit on the first baseline.
+
 > ironpress: Pure Rust HTML to PDF. No browser needed.
 
 ---
@@ -314,6 +322,13 @@ unicode: `<html>
     <p>Arabic: \u0645\u0631\u062D\u0628\u0627 \u0628\u0627\u0644\u0639\u0627\u0644\u0645</p>
     <p>Hebrew: \u05E9\u05DC\u05D5\u05DD \u05E2\u05D5\u05DC\u05DD</p>
     <p>Mixed: Hello \u0645\u0631\u062D\u0628\u0627 World</p>
+  </div>
+
+  <h2>RTL Paragraphs (bidi)</h2>
+  <div class="sample" style="font-size: 18px;">
+    <div dir="rtl">\u05E9\u05DC\u05D5\u05DD \u05E2\u05D5\u05DC\u05DD Hello World</div>
+    <div style="direction: rtl;">\u05D1\u05D3\u05D9\u05E7\u05D4 \u05D1\u05E2\u05D1\u05E8\u05D9\u05EA RTL \u05D1\u05D3\u05D9\u05E7\u05D4 123</div>
+    <p>English only paragraph stays LTR.</p>
   </div>
 
   <h2>Mathematical Symbols</h2>
