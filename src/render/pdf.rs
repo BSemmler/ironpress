@@ -2905,6 +2905,7 @@ fn render_container_children(
                 position,
                 offset_top,
                 offset_left,
+                opacity: tb_opacity,
                 block_width: tb_block_width,
                 ..
             } => {
@@ -2919,12 +2920,25 @@ fn render_container_children(
                     let abs_x = (x - abs_pad_left) + offset_left;
                     let abs_y = (container_top_y + abs_pad_top) - offset_top;
 
+                    // Apply element opacity (e.g. `.z-back { opacity: 0.8 }`)
+                    // for the entire absolute element (background + text). The
+                    // PDF graphics-state name is unique per alpha counter so it
+                    // doesn't collide with other elements' ExtGState entries.
+                    let needs_opacity = *tb_opacity < 1.0;
+                    if needs_opacity {
+                        let gs_name = format!("GSabs{bg_alpha_counter}");
+                        *bg_alpha_counter += 1;
+                        page_ext_gstates.push((gs_name.clone(), *tb_opacity));
+                        content.push_str(&format!("/{gs_name} gs\n"));
+                    }
+
                     if let Some((r, g, b, a)) = background_color {
-                        let needs_alpha = *a < 1.0;
+                        let effective_alpha = *a * *tb_opacity;
+                        let needs_alpha = effective_alpha < 1.0;
                         if needs_alpha {
                             let gs_name = format!("GScca{bg_alpha_counter}");
                             *bg_alpha_counter += 1;
-                            page_ext_gstates.push((gs_name.clone(), *a));
+                            page_ext_gstates.push((gs_name.clone(), effective_alpha));
                             content.push_str(&format!("/{gs_name} gs\n"));
                         }
                         content.push_str(&format!(
@@ -2935,7 +2949,14 @@ fn render_container_children(
                             ah = abs_h,
                         ));
                         if needs_alpha {
-                            content.push_str("/GSDefault gs\n");
+                            // Restore the element-level opacity (if any) so
+                            // subsequent text also gets alpha-composited.
+                            if needs_opacity {
+                                let gs_name = format!("GSabs{}", *bg_alpha_counter - 2);
+                                content.push_str(&format!("/{gs_name} gs\n"));
+                            } else {
+                                content.push_str("/GSDefault gs\n");
+                            }
                         }
                     }
                     // Render text for absolute-positioned children
@@ -2966,6 +2987,10 @@ fn render_container_children(
                             lx += rw;
                         }
                         text_y_abs -= metrics.descender + metrics.half_leading;
+                    }
+                    // Reset the graphics state if we applied element opacity.
+                    if needs_opacity {
+                        content.push_str("/GSDefault gs\n");
                     }
                     // Don't advance cursor_y for absolute elements
                     continue;
