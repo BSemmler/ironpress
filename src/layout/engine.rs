@@ -497,6 +497,37 @@ pub fn compute_root_margin(rules: &[CssRule], page_size: PageSize) -> Margin {
     }
 }
 
+/// Resolve the padding declared on `body`, `html`, or `:root` selectors against
+/// the given page size. Chrome treats body padding as shrinking the printable
+/// area inside the page margin (like an inner gutter), so we fold it into the
+/// effective page margin alongside `compute_root_margin`.
+///
+/// Returns zeros when no matching rule declares padding.
+pub fn compute_root_padding(rules: &[CssRule], page_size: PageSize) -> (f32, f32, f32, f32) {
+    let mut style = ComputedStyle::default();
+    let parent = ComputedStyle {
+        viewport_width: page_size.width,
+        viewport_height: page_size.height,
+        root_font_size: style.font_size,
+        width: Some(page_size.width),
+        ..ComputedStyle::default()
+    };
+
+    for rule in rules {
+        let sel = rule.selector.trim();
+        if sel == "body" || sel == "html" || sel == ":root" {
+            crate::style::computed::apply_style_map(&mut style, &rule.declarations, &parent);
+        }
+    }
+
+    (
+        style.padding.top,
+        style.padding.right,
+        style.padding.bottom,
+        style.padding.left,
+    )
+}
+
 /// Lay out the DOM nodes into pages with stylesheet rules.
 #[allow(dead_code)]
 pub fn layout_with_rules(
@@ -635,9 +666,14 @@ pub fn layout_with_rules_and_fonts(
         &mut env,
     );
 
-    // Then paginate. Pass the body/html margin-top so the first in-flow block
-    // on each page can collapse through the root (Chrome parity).
-    super::paginate::paginate(elements, content_height, parent_style.margin.top)
+    // Then paginate. Pass the body/html margin-top (plus padding-top, which
+    // acts as an additional inner gutter on page 1 when the body has padding)
+    // so the first in-flow block on each page can collapse through the root.
+    super::paginate::paginate(
+        elements,
+        content_height,
+        parent_style.margin.top + parent_style.padding.top,
+    )
 }
 
 /// Flatten a list of DOM nodes into layout elements.

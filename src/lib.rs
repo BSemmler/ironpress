@@ -455,6 +455,17 @@ impl HtmlConverter {
         effective_margin.right += body_margin.right;
         effective_margin.left += body_margin.left;
 
+        // Body padding acts as an additional inner gutter in Chrome's print
+        // model. Since ironpress strips the <body> element before layout, we
+        // fold its horizontal padding into the page margin too, so content
+        // inside the body is offset by `page_margin + body_margin + body_padding`
+        // on every page — matching Chrome's rendering of e.g.
+        // `body { padding: 40px }`.
+        let (_bp_top, bp_right, _bp_bottom, bp_left) =
+            layout::engine::compute_root_padding(&rules, effective_page_size);
+        effective_margin.right += bp_right;
+        effective_margin.left += bp_left;
+
         // Step 4: Parse custom fonts (API-registered + @font-face from CSS)
         let mut parsed_fonts = self.parse_custom_fonts();
 
