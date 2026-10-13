@@ -115,3 +115,45 @@ fn footer_html_paints_styled_nested_content_on_each_page() {
         "styled footer background on both pages"
     );
 }
+
+/// CSS GCPM 3 §2 resolves page-based counters in a running element on the
+/// page that displays it. The embedded subset must therefore carry every
+/// resolved digit, and none of the deferred-counter marker characters.
+#[test]
+fn footer_html_page_counters_embed_resolved_digit_glyphs() {
+    let html = r#"
+        <div style="height: 100pt">First</div>
+        <div style="break-before: page; height: 100pt">Second</div>
+        <div style="break-before: page; height: 100pt">Third</div>
+    "#;
+    let pdf = crate::HtmlConverter::new()
+        .page_size(crate::PageSize::new(240.0, 180.0))
+        .margin(crate::Margin::new(18.0, 18.0, 54.0, 18.0))
+        .footer_html(
+            r#"<style>
+                @media print {
+                    .page::after { content: counter(page) }
+                    .pages::after { content: counter(pages) }
+                }
+            </style>Page <span class="page"></span> of <span class="pages"></span>"#,
+        )
+        .compress(false)
+        .convert(html)
+        .expect("footer with page counters");
+    let syntax = String::from_utf8_lossy(&pdf);
+    let maps_to = |unicode: &str| {
+        syntax
+            .lines()
+            .any(|line| line.starts_with('<') && line.ends_with(&format!(" <{unicode}>")))
+    };
+
+    for digit in ["0031", "0032", "0033"] {
+        assert!(maps_to(digit), "resolved digit U+{digit} is embedded");
+    }
+    for marker in ["005F", "007C"] {
+        assert!(
+            !maps_to(marker),
+            "marker character U+{marker} is not embedded"
+        );
+    }
+}

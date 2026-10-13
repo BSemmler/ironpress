@@ -925,6 +925,17 @@ pub(super) fn margin_box_font_usage(
             if !text.is_empty() {
                 runs.push(margin_box_font_usage_run(text, style.font_family));
             }
+            let counters = PageCounters {
+                page: page_counter_value(margin_box, page_number),
+                pages: pages.len(),
+            };
+            for token in &margin_box.content {
+                if let crate::parser::css::MarginContentToken::Element(reference) = token
+                    && let Some(element) = page.generated_content.running_element(reference)
+                {
+                    runs.extend(counters.resolved_runs(element));
+                }
+            }
         }
     }
 

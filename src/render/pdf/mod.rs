@@ -1,13 +1,14 @@
 use crate::error::IronpressError;
 use crate::layout::cells::{CellBox, CellBoxHolder, GridCell};
 use crate::layout::elements::{
-    ColumnRule, Container, FlexRow, GridRow, HorizontalRule, Image, LayoutElement, LayoutVisitor,
-    MathBlock, ProgressBar, StackingParticipant, Svg, TableRow, TextBlock,
+    ColumnRule, Container, FlexRow, GridRow, HorizontalRule, Image, LayoutElement, LayoutNode,
+    LayoutVisitor, MathBlock, ProgressBar, StackingParticipant, Svg, TableRow, TextBlock,
 };
 use crate::layout::engine::{
     FlexCell, FlexLineId, FootnoteItem, ImageFormat, Page, PngMetadata, TableCell, TextLine,
     TextRun, decode_footnote_link, is_internal_target_anchor, layout_element_paint_order,
 };
+use crate::layout::page_counter::PageCounters;
 use crate::layout::paginate::ResolvedFootnoteAreaStyle;
 use crate::layout::text::{OverflowWrap, TextWrapOptions, wrap_text_runs};
 use crate::parser::ttf::TtfFont;
@@ -658,9 +659,13 @@ pub(crate) fn render_pdf_to_writer_full_opts_with_resources<W: std::io::Write>(
                     custom_fonts,
                 );
                 let band = mb.position.band();
-                let mut running_element: Option<&dyn LayoutElement> = None;
+                let mut running_element: Option<LayoutNode> = None;
                 let mut text_fragments: Vec<(String, FontFamily)> = Vec::new();
                 let page_counter = page_counter_value(mb, page_num);
+                let page_counters = PageCounters {
+                    page: page_counter,
+                    pages: total_pages,
+                };
                 for tok in &mb.content {
                     match tok {
                         MarginContentToken::Literal(s) => {
@@ -675,7 +680,10 @@ pub(crate) fn render_pdf_to_writer_full_opts_with_resources<W: std::io::Write>(
                                 .push((total_pages.to_string(), margin_text.font_family.clone()));
                         }
                         MarginContentToken::Element(reference) => {
-                            running_element = page.generated_content.running_element(reference);
+                            running_element = page
+                                .generated_content
+                                .running_element(reference)
+                                .map(|element| page_counters.resolve_element(element));
                         }
                         MarginContentToken::NamedString(reference) => {
                             let value = page.generated_content.named_string(reference);
@@ -710,7 +718,7 @@ pub(crate) fn render_pdf_to_writer_full_opts_with_resources<W: std::io::Write>(
                             ));
                             render_running_margin_element(
                                 &mut decoration_content,
-                                element,
+                                element.as_ref(),
                                 mb.position.align(),
                                 band,
                                 page_size,

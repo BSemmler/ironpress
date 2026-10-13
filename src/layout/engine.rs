@@ -53,6 +53,7 @@ use super::list_markers::{
 };
 #[cfg(test)]
 use super::list_markers::{to_alpha_lower, to_roman_lower};
+use super::page_counter::{DeferredPageCounter, PageCounterKind};
 use super::paginate::FootnoteAreaLayout;
 use super::print_scale::{PrintContentScale, assign_page_print_scales};
 use super::root_formatting::{DocumentRootStyles, RootFormattingContext};
@@ -234,6 +235,18 @@ impl PhysicalEdges<LayoutBorderSide> {
 pub(crate) struct CounterState {
     pub(crate) stacks: HashMap<String, Vec<i32>>,
     pub(crate) quote_depth: usize,
+    pub(crate) page_counters: PageCounterBinding,
+}
+
+/// Where `counter(page)` and `counter(pages)` take their values.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageCounterBinding {
+    /// In-flow content reads the document counter stack.
+    #[default]
+    Document,
+    /// Running-element content is displayed in page-margin boxes, so the
+    /// displaying page supplies the value at paint time (css-gcpm-3 §2).
+    DisplayingPage,
 }
 
 /// Counter operations attached to one generated element box.
@@ -251,7 +264,15 @@ pub(crate) struct CounterScope {
 impl CounterState {
     /// Whether no generated-content counter or quote context is active.
     pub(crate) fn is_generated_content_context_free(&self) -> bool {
-        self.stacks.is_empty() && self.quote_depth == 0
+        self.stacks.is_empty()
+            && self.quote_depth == 0
+            && self.page_counters == PageCounterBinding::Document
+    }
+
+    /// Bind page-based counters to `binding`, returning the previous binding
+    /// for the caller to restore when its subtree is done.
+    pub(crate) fn bind_page_counters(&mut self, binding: PageCounterBinding) -> PageCounterBinding {
+        std::mem::replace(&mut self.page_counters, binding)
     }
 
     pub(crate) fn enter_element(&mut self, style: &ComputedStyle) -> CounterScope {
@@ -299,6 +320,19 @@ impl CounterState {
             self.pop_name(name);
         }
     }
+    /// The paint-time stand-in for `counter(name, style)` when `name` is a
+    /// page-based counter bound to the displaying page.
+    pub(crate) fn deferred_page_counter(
+        &self,
+        name: &str,
+        style: &ListStyleType,
+    ) -> Option<DeferredPageCounter> {
+        if self.page_counters != PageCounterBinding::DisplayingPage {
+            return None;
+        }
+        PageCounterKind::from_counter_name(name).map(|kind| DeferredPageCounter::new(kind, style))
+    }
+
     pub(crate) fn get(&self, name: &str) -> i32 {
         self.stacks
             .get(name)
@@ -2574,6 +2608,9 @@ fn capture_running_element(
     env: &mut LayoutEnv,
 ) -> Option<LayoutNode> {
     let mut captured = Vec::new();
+    let outer_binding = env
+        .counter_state
+        .bind_page_counters(PageCounterBinding::DisplayingPage);
     flatten_element_with_running_mode(
         el,
         context,
@@ -2581,6 +2618,7 @@ fn capture_running_element(
         env,
         RunningElementMode::LayoutCapturedContent,
     );
+    env.counter_state.bind_page_counters(outer_binding);
     let element = if captured.len() == 1 {
         captured.pop()?
     } else {

@@ -7,6 +7,7 @@ mod inline_selectors;
 mod paged_breaks;
 mod positioning;
 mod root_formatting_context;
+mod running_page_counters;
 mod stacking;
 mod support;
 mod text_decoration;
