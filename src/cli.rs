@@ -319,9 +319,9 @@ OPTIONS:
     --landscape             Use landscape orientation
     --margin <PT>           Uniform margin in points (default: 72)
     --header <TEXT>         Header text on each page
-    --header-html <HTML>    Header HTML fragment on each page
+    --header-html <HTML>    Header HTML fragment on each page (CSS counter(page)/counter(pages))
     --footer <TEXT>         Footer text ({page} and {pages} for numbering)
-    --footer-html <HTML>    Footer HTML fragment on each page
+    --footer-html <HTML>    Footer HTML fragment on each page (CSS counter(page)/counter(pages))
     --sanitize <BOOL>       Enable/disable HTML sanitization (default: true)
     --compress <BOOL>       FlateDecode-compress content streams (default: true)
     --jpeg-quality <N>      JPEG quality for optimized image embedding (default: 95)

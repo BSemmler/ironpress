@@ -170,8 +170,22 @@ let pdf = HtmlConverter::new()
 Use `.header_html(...)` or `.footer_html(...)` for images, tables, and styled
 markup. Rich fragments use the document sanitizer, resource policy, fonts, and
 CSS cascade. Reserve enough top or bottom margin for the fragment. The existing
-`.header(...)` and `.footer(...)` methods remain plain text; `{page}` and
-`{pages}` substitution remains a plain-text footer feature.
+`.header(...)` and `.footer(...)` methods remain plain text with `{page}` and
+`{pages}` substitution. Rich fragments number pages with CSS page counters,
+which resolve on every page that displays the fragment:
+
+```rust
+use ironpress::HtmlConverter;
+
+let pdf = HtmlConverter::new()
+    .footer_html(
+        "<style>.page::after { content: counter(page) } \
+                .pages::after { content: counter(pages) }</style>\
+         Page <span class=\"page\"></span> of <span class=\"pages\"></span>",
+    )
+    .convert("<h1>Numbered pages</h1>")
+    .unwrap();
+```
 
 `RasterQuality` keeps source-image, filter, and flattened-background resolution
 in one physical-DPI policy. Its default preserves sharp source/filter output

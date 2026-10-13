@@ -504,6 +504,10 @@ impl HtmlConverter {
     ///
     /// The fragment uses the same sanitization, resource policy, fonts, and CSS
     /// cascade as the document. Reserve enough top margin for its content.
+    ///
+    /// Page numbers use CSS page counters inside the fragment, for example
+    /// `<style>.n::after { content: counter(page) }</style><span class="n"></span>`;
+    /// `counter(page)` and `counter(pages)` resolve on every page that shows it.
     pub fn header_html(mut self, html: impl Into<String>) -> Self {
         self.page_margins.set_header_html(html.into());
         self
@@ -522,6 +526,10 @@ impl HtmlConverter {
     ///
     /// The fragment uses the same sanitization, resource policy, fonts, and CSS
     /// cascade as the document. Reserve enough bottom margin for its content.
+    ///
+    /// Page numbers use CSS page counters inside the fragment, for example
+    /// `<style>.n::after { content: counter(page) }</style><span class="n"></span>`;
+    /// `counter(page)` and `counter(pages)` resolve on every page that shows it.
     pub fn footer_html(mut self, html: impl Into<String>) -> Self {
         self.page_margins.set_footer_html(html.into());
         self

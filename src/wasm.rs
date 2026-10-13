@@ -139,6 +139,7 @@ impl WasmHtmlConverter {
     }
 
     /// Set an HTML fragment rendered in the top margin of every page.
+    /// CSS `counter(page)` and `counter(pages)` resolve per page.
     #[wasm_bindgen(js_name = headerHtml)]
     pub fn header_html(&mut self, html: &str) {
         self.update(|converter| converter.header_html(html));
@@ -150,6 +151,7 @@ impl WasmHtmlConverter {
     }
 
     /// Set an HTML fragment rendered in the bottom margin of every page.
+    /// CSS `counter(page)` and `counter(pages)` resolve per page.
     #[wasm_bindgen(js_name = footerHtml)]
     pub fn footer_html(&mut self, html: &str) {
         self.update(|converter| converter.footer_html(html));
