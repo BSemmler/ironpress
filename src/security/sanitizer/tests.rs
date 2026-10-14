@@ -68,10 +68,86 @@ fn rejects_oversized_input() {
     assert!(sanitize_html(&huge).is_err());
 }
 
+fn max_depth(html: &str) -> usize {
+    NestingScanner::new(html).max_depth()
+}
+
 #[test]
 fn nesting_depth_check() {
-    assert_eq!(check_nesting_depth("<a><b><c></c></b></a>"), 3);
-    assert_eq!(check_nesting_depth("<p>Hello</p>"), 1);
+    assert_eq!(max_depth("<a><b><c></c></b></a>"), 3);
+    assert_eq!(max_depth("<p>Hello</p>"), 1);
+}
+
+#[test]
+fn void_elements_do_not_nest() {
+    assert_eq!(max_depth("<p>a<br>b<br>c<hr><img src=x.png><wbr></p>"), 1);
+    assert_eq!(
+        max_depth("<table><colgroup><col><col></colgroup></table>"),
+        2
+    );
+    assert_eq!(max_depth("<DIV><BR></DIV>"), 1);
+}
+
+#[test]
+fn self_closing_void_elements_do_not_nest() {
+    assert_eq!(max_depth(r#"<div><br/><img src="a.png" /><hr /></div>"#), 1);
+}
+
+#[test]
+fn self_closing_flag_is_ignored_on_non_void_html_elements() {
+    // `<span/>` opens a span that stays open until `</div>` implicitly closes it.
+    assert_eq!(max_depth("<div><span/></div>"), 2);
+}
+
+#[test]
+fn self_closing_flag_is_honored_in_foreign_content() {
+    assert_eq!(
+        max_depth(r#"<p><svg><path d="M0 0"/><circle r="1"/></svg></p>"#),
+        2
+    );
+    assert_eq!(
+        max_depth("<p><math><mi/><mo/></math><svg/><em>x</em></p>"),
+        2
+    );
+}
+
+#[test]
+fn slashes_in_attribute_values_do_not_close_tags() {
+    assert_eq!(
+        max_depth(r#"<div><a href="https://example.com/x"><span>t</span></a></div>"#),
+        3
+    );
+    assert_eq!(
+        max_depth(r#"<p><img src="data:image/png;base64,iVBO/w=="><em>x</em></p>"#),
+        2
+    );
+}
+
+#[test]
+fn quoted_greater_than_does_not_end_a_tag() {
+    assert_eq!(max_depth(r#"<p title="a > b"><em>x</em></p>"#), 2);
+    assert_eq!(max_depth("<p title='a/>b'><em>x</em></p>"), 2);
+}
+
+#[test]
+fn comments_and_declarations_do_not_nest() {
+    assert_eq!(
+        max_depth("<!DOCTYPE html><!-- <div> --><html><body><p>x</p></body></html>"),
+        3
+    );
+    assert_eq!(max_depth("<?xml version=\"1.0\"?><p>x</p>"), 1);
+}
+
+#[test]
+fn raw_text_content_is_not_scanned_for_tags() {
+    assert_eq!(max_depth("<style>a > b { color: red }</style><p>x</p>"), 1);
+    assert_eq!(max_depth("<script>if (a<b && c<d) {}</script><p>x</p>"), 1);
+    assert_eq!(max_depth("<textarea><div><div></textarea><p>x</p>"), 1);
+}
+
+#[test]
+fn less_than_without_tag_name_is_text() {
+    assert_eq!(max_depth("<p>1 < 2 and 3 <= 4</p>"), 1);
 }
 
 #[test]
@@ -81,6 +157,25 @@ fn rejects_excessive_nesting() {
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("nesting depth"));
+}
+
+#[test]
+fn accepts_many_void_line_breaks() {
+    // Rich-text editors emit `<br>` without a closing slash; void elements never open a level.
+    let html = format!("<p>{}</p>", "line<br>".repeat(MAX_NESTING_DEPTH + 100));
+    assert!(sanitize_html(&html).is_ok());
+}
+
+#[test]
+fn rejects_excessive_nesting_written_as_self_closing_tags() {
+    assert!(sanitize_html(&"<div/>".repeat(MAX_NESTING_DEPTH + 1)).is_err());
+}
+
+#[test]
+fn rejects_excessive_nesting_with_slashes_in_attributes() {
+    let open = r#"<div class="a/b">"#.repeat(MAX_NESTING_DEPTH + 1);
+    let html = open + &"</div>".repeat(MAX_NESTING_DEPTH + 1);
+    assert!(sanitize_html(&html).is_err());
 }
 
 #[test]

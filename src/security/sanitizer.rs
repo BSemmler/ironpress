@@ -3,6 +3,9 @@ use crate::parser::dom::{DomNode, HtmlTag};
 use crate::security::resources::DocumentResources;
 #[cfg(test)]
 use crate::security::resources::NetworkPolicy;
+use nesting::NestingScanner;
+
+mod nesting;
 
 /// Maximum allowed HTML input size (10 MB).
 const MAX_INPUT_SIZE: usize = 10 * 1024 * 1024;
@@ -31,7 +34,7 @@ pub(crate) fn sanitize_html_with_resources(
     }
 
     // Check nesting depth
-    if check_nesting_depth(html) > MAX_NESTING_DEPTH {
+    if NestingScanner::new(html).max_depth() > MAX_NESTING_DEPTH {
         return Err(IronpressError::SecurityError(
             "HTML nesting depth exceeds maximum".to_string(),
         ));
@@ -343,38 +346,6 @@ fn remove_event_handlers(html: &str) -> String {
     }
 
     result
-}
-
-fn check_nesting_depth(html: &str) -> usize {
-    let mut depth: usize = 0;
-    let mut max_depth: usize = 0;
-
-    let mut in_tag = false;
-    let mut is_closing = false;
-
-    for c in html.chars() {
-        match c {
-            '<' => {
-                in_tag = true;
-                is_closing = false;
-            }
-            '/' if in_tag => {
-                is_closing = true;
-            }
-            '>' if in_tag => {
-                if is_closing {
-                    depth = depth.saturating_sub(1);
-                } else {
-                    depth += 1;
-                    max_depth = max_depth.max(depth);
-                }
-                in_tag = false;
-            }
-            _ => {}
-        }
-    }
-
-    max_depth
 }
 
 #[cfg(test)]

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+
+- The input nesting-depth guard counts element nesting the way the HTML
+  tokenizer does. Void elements (`<br>`, `<img>`, `<col>`, …), self-closing
+  SVG and MathML elements, comments, declarations and raw text element content
+  no longer add depth, so long documents with many `<br>` tags are no longer
+  rejected with "HTML nesting depth exceeds maximum". A `/` or `>` inside a
+  quoted attribute value no longer ends or closes a tag, and `<div/>` counts as
+  the open element HTML parses it as, so deeply nested input written with
+  slashes in its attributes (`<div class="a/b">`) or as self-closing tags is now
+  rejected as intended instead of slipping past the limit.
+
 ## [1.7.0] — 2026-09-15
 
 ### Added
