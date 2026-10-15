@@ -188,6 +188,7 @@ pub(super) fn should_try_lossy_png_reencode(width: u32, height: u32, byte_len: u
     u64::from(width) * u64::from(height) >= MIN_LOSSY_PNG_PIXELS && byte_len >= MIN_LOSSY_PNG_BYTES
 }
 
+#[derive(Clone)]
 pub(super) struct ResizedImage {
     pub(super) data: Vec<u8>,
     pub(super) width: u32,

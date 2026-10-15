@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 mod cache;
 mod scale;
@@ -293,6 +294,57 @@ impl PdfWriter {
             return None;
         }
 
+        // The same image (a letterhead logo, say) is usually resized identically
+        // in every document of a batch, and the resize and re-encode is costly
+        let key = ResizeKey {
+            source_hash: {
+                let mut hasher = std::hash::DefaultHasher::new();
+                std::hash::Hash::hash(data, &mut hasher);
+                std::hash::Hasher::finish(&hasher)
+            },
+            new_w,
+            new_h,
+            format,
+            png_layout: png_metadata.map(|m| (m.channels, m.bit_depth)),
+            jpeg_quality: self.opts.jpeg_quality,
+        };
+        // The hash only finds the entry; the stored source bytes decide the hit
+        if let Some(cached) = RESIZE_CACHE.get(&key)
+            && cached.source.as_slice() == data
+        {
+            return Some(cached.resized.clone());
+        }
+        let resized = self.resize_image(
+            data,
+            source_width,
+            source_height,
+            format,
+            png_metadata,
+            new_w,
+            new_h,
+        )?;
+        RESIZE_CACHE.insert(
+            key,
+            Arc::new(CachedResize {
+                source: data.to_vec(),
+                resized: resized.clone(),
+            }),
+        );
+        Some(resized)
+    }
+
+    /// Resizes and re-encodes `data` to `new_w` x `new_h`; no caching
+    #[allow(clippy::too_many_arguments)]
+    fn resize_image(
+        &self,
+        data: &[u8],
+        source_width: u32,
+        source_height: u32,
+        format: ImageFormat,
+        png_metadata: Option<&PngMetadata>,
+        new_w: u32,
+        new_h: u32,
+    ) -> Option<ResizedImage> {
         match format {
             ImageFormat::Jpeg => {
                 let decoded = image::load_from_memory(data).ok()?.to_rgb8();
@@ -374,5 +426,98 @@ impl PdfWriter {
                 })
             }
         }
+    }
+}
+
+/// A batch rarely repeats more than a few distinct images (logos, signatures),
+/// and each entry holds the source and resized bytes.
+const RESIZE_CACHE_CAPACITY: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(16) {
+    Some(capacity) => capacity,
+    None => std::num::NonZeroUsize::MIN,
+};
+
+/// Resized source images, shared across conversions. Keyed by a hash of the
+/// source bytes plus everything that shapes the output; each entry keeps the
+/// source bytes so a hash collision is never mistaken for a hit.
+static RESIZE_CACHE: std::sync::LazyLock<
+    crate::bounded_cache::BoundedProcessCache<ResizeKey, Arc<CachedResize>>,
+> = std::sync::LazyLock::new(|| {
+    crate::bounded_cache::BoundedProcessCache::new(RESIZE_CACHE_CAPACITY)
+});
+
+#[derive(PartialEq, Eq, Hash)]
+struct ResizeKey {
+    source_hash: u64,
+    new_w: u32,
+    new_h: u32,
+    format: ImageFormat,
+    png_layout: Option<(u8, u8)>,
+    jpeg_quality: u8,
+}
+
+struct CachedResize {
+    source: Vec<u8>,
+    resized: ResizedImage,
+}
+
+#[cfg(test)]
+mod resize_cache_tests {
+    use super::*;
+
+    fn rgb_png(seed: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(96, 96, |x, y| {
+            image::Rgb([
+                ((x * 3 + y + seed) % 256) as u8,
+                ((x + y * 5 + seed * 7) % 256) as u8,
+                ((x * 7 + y * 11) % 256) as u8,
+            ])
+        });
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        png
+    }
+
+    /// `maybe_resize_image` for a 96px PNG shown at 12pt, which always downscales
+    fn resize(writer: &PdfWriter, png: &[u8]) -> ResizedImage {
+        writer
+            .maybe_resize_image(png, 96, 96, ImageFormat::Png, None, 12.0, 12.0)
+            .unwrap()
+    }
+
+    fn uncached(writer: &PdfWriter, png: &[u8], like: &ResizedImage) -> ResizedImage {
+        writer
+            .resize_image(png, 96, 96, ImageFormat::Png, None, like.width, like.height)
+            .unwrap()
+    }
+
+    #[test]
+    fn repeated_resizes_match_an_uncached_resize() {
+        let writer = PdfWriter::new();
+        let png = rgb_png(1);
+        let first = resize(&writer, &png);
+        let again = resize(&writer, &png);
+        let fresh = uncached(&writer, &png, &first);
+        assert!(
+            first.width < 96 && first.height < 96,
+            "test image must downscale"
+        );
+        for cached in [&first, &again] {
+            assert_eq!(cached.data, fresh.data);
+            assert_eq!((cached.width, cached.height), (fresh.width, fresh.height));
+            assert_eq!(cached.format, fresh.format);
+        }
+    }
+
+    #[test]
+    fn different_sources_of_the_same_size_are_not_shared() {
+        let writer = PdfWriter::new();
+        let (a, b) = (rgb_png(2), rgb_png(3));
+        let resized_a = resize(&writer, &a);
+        let resized_b = resize(&writer, &b);
+        assert_ne!(resized_a.data, resized_b.data);
+        assert_eq!(resized_b.data, uncached(&writer, &b, &resized_b).data);
+        assert_eq!(resize(&writer, &a).data, resized_a.data);
     }
 }
