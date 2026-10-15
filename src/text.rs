@@ -123,8 +123,8 @@ pub(crate) fn measure_text_width_with_shaping(
         return Some(width);
     }
     if let Some((_, font)) = resolve_custom_font(font_family, bold, italic, fonts) {
-        let shaped = shape_text_with_font(text, font_size, font, shaping)?;
-        if shaped_has_no_missing_glyphs(&shaped) {
+        let shaped = shaped_width(text, font_size, font, shaping)?;
+        if shaped.all_glyphs_found {
             return Some(shaped.width);
         }
     } else if crate::render::pdf::is_winansi_encodable(text) {
@@ -424,18 +424,18 @@ pub(crate) fn inline_boundary_kerning_advance(
     let right_text = right_char.to_string();
     let pair_text = format!("{left_text}{right_text}");
     let shaping = TextShaping::KERNING_ONLY;
-    let Some(left_width) = shape_text_with_font(&left_text, left.font_size, left_font, shaping)
-        .map(|shaped| shaped.width)
+    let Some(left_width) =
+        shaped_width(&left_text, left.font_size, left_font, shaping).map(|shaped| shaped.width)
     else {
         return 0.0;
     };
-    let Some(right_width) = shape_text_with_font(&right_text, right.font_size, right_font, shaping)
-        .map(|shaped| shaped.width)
+    let Some(right_width) =
+        shaped_width(&right_text, right.font_size, right_font, shaping).map(|shaped| shaped.width)
     else {
         return 0.0;
     };
-    let Some(pair_width) = shape_text_with_font(&pair_text, left.font_size, left_font, shaping)
-        .map(|shaped| shaped.width)
+    let Some(pair_width) =
+        shaped_width(&pair_text, left.font_size, left_font, shaping).map(|shaped| shaped.width)
     else {
         return 0.0;
     };
@@ -544,8 +544,7 @@ fn measure_text_width_by_font_face_ranges(
 
     let mut width = 0.0;
     for segment in split_text_by_font_face_ranges(text, name, bold, italic, fonts)? {
-        let shaped = shape_text_with_font(&segment.text, font_size, segment.font, shaping)?;
-        width += shaped.width;
+        width += shaped_width(&segment.text, font_size, segment.font, shaping)?.width;
     }
     Some(width)
 }
@@ -775,6 +774,64 @@ fn shape_text_with_font(
     Some(ShapedRun { glyphs, width })
 }
 
+/// What measuring needs from shaping a run
+struct ShapedWidth {
+    width: f32,
+    all_glyphs_found: bool,
+}
+
+/// The width of `text` shaped in `font`, and whether every glyph was found.
+///
+/// Equal to `shape_text_with_font(..).width` and a check that no glyph is
+/// missing, including declining (`None`) the same input, but without building
+/// each glyph's cluster text, which measuring does not need and which costs
+/// more than the arithmetic here.
+fn shaped_width(
+    text: &str,
+    font_size: f32,
+    font: &TtfFont,
+    shaping: TextShaping,
+) -> Option<ShapedWidth> {
+    if text.is_empty() {
+        return Some(ShapedWidth {
+            width: 0.0,
+            all_glyphs_found: true,
+        });
+    }
+    let (shaped, scale) = shape_glyph_buffer(
+        text,
+        font_size,
+        font,
+        shaping,
+        TextShapingDirection::Horizontal,
+    )?;
+    let infos = shaped.glyph_infos();
+    let positions = shaped.glyph_positions();
+    if infos.len() != positions.len() {
+        return None;
+    }
+    let mut width = crate::layout::units::InlineLayoutUnit::default();
+    let mut all_glyphs_found = true;
+    for (info, position) in infos.iter().zip(positions) {
+        // The checks `shape_text_glyphs` makes: a 16-bit glyph id, and a cluster
+        // on a character boundary (else it cannot slice the cluster's text)
+        let glyph_id = u16::try_from(info.glyph_id).ok()?;
+        if !text.is_char_boundary(usize::try_from(info.cluster).ok()?) {
+            return None;
+        }
+        all_glyphs_found &= glyph_id != 0;
+        width = width
+            + crate::layout::units::InlineLayoutUnit::from_points(resolve_shaped_position(
+                position.x_advance,
+                scale,
+            ));
+    }
+    Some(ShapedWidth {
+        width: width.to_points(),
+        all_glyphs_found,
+    })
+}
+
 fn shape_vertical_text_with_font(
     text: &str,
     font_size: f32,
@@ -798,17 +855,15 @@ enum TextShapingDirection {
     Vertical,
 }
 
-fn shape_text_glyphs(
+/// Runs rustybuzz over `text`; returns the glyphs and the font-unit-to-point
+/// scale. Callers decide how much per-glyph detail to derive from them.
+fn shape_glyph_buffer(
     text: &str,
     font_size: f32,
     font: &TtfFont,
     shaping: TextShaping,
     direction: TextShapingDirection,
-) -> Option<Vec<ShapedGlyph>> {
-    if text.is_empty() {
-        return Some(Vec::new());
-    }
-
+) -> Option<(rustybuzz::GlyphBuffer, f32)> {
     let face = font.shaping.as_ref()?.face();
     let scale = font.adjusted_font_size(font_size) / (face.units_per_em() as f32).max(1.0);
 
@@ -840,7 +895,25 @@ fn shape_text_glyphs(
         ));
     }
 
-    let shaped = rustybuzz::shape(face, &features, buffer);
+    Some((rustybuzz::shape(face, &features, buffer), scale))
+}
+
+/// Rounds a shaped advance or offset the way every shaped glyph stores it
+fn resolve_shaped_position(position: i32, scale: f32) -> f32 {
+    crate::layout::units::TextRunLayoutUnit::from_points(position as f32 * scale).to_points()
+}
+
+fn shape_text_glyphs(
+    text: &str,
+    font_size: f32,
+    font: &TtfFont,
+    shaping: TextShaping,
+    direction: TextShapingDirection,
+) -> Option<Vec<ShapedGlyph>> {
+    if text.is_empty() {
+        return Some(Vec::new());
+    }
+    let (shaped, scale) = shape_glyph_buffer(text, font_size, font, shaping, direction)?;
     let infos = shaped.glyph_infos();
     let positions = shaped.glyph_positions();
     if infos.len() != positions.len() {
@@ -851,9 +924,7 @@ fn shape_text_glyphs(
         .map(|info| usize::try_from(info.cluster).ok())
         .collect::<Option<Vec<_>>>()?;
     let cluster_unicode = glyph_cluster_unicode(text, &clusters)?;
-    let resolve_position = |position: i32| {
-        crate::layout::units::TextRunLayoutUnit::from_points(position as f32 * scale).to_points()
-    };
+    let resolve_position = |position: i32| resolve_shaped_position(position, scale);
 
     infos
         .iter()
@@ -905,7 +976,7 @@ mod tests {
     use super::{
         ShapedGlyph, ShapedRun, custom_font_line_height, glyph_cluster_unicode,
         inline_boundary_kerning_advance, measure_text_width, resolve_custom_font, shape_text_run,
-        shape_text_with_font, shape_vertical_text_with_font,
+        shape_text_with_font, shape_vertical_text_with_font, shaped_width,
     };
     use crate::layout::engine::{TextRun, TextShaping};
     use crate::style::computed::FontFamily;
@@ -955,6 +1026,40 @@ mod tests {
         let run = shape_text_with_font("", 12.0, &font, TextShaping::default()).unwrap();
         assert_eq!(run.width, 0.0);
         assert!(run.glyphs.is_empty());
+    }
+
+    #[test]
+    fn shaped_width_matches_full_shaping() {
+        let fonts = parity_sans_fonts();
+        let (_, font) = resolve_custom_font(
+            &FontFamily::Custom("ParitySans".to_string()),
+            false,
+            false,
+            &fonts,
+        )
+        .expect("ParitySans must resolve");
+        for shaping in [TextShaping::default(), TextShaping::KERNING_ONLY] {
+            for text in [
+                "",
+                "AgBb",
+                "fi ffl Wave AV To",
+                "x",
+                "日本語 mixed",
+                "e\u{301}",
+            ] {
+                let full = shape_text_with_font(text, 11.5, font, shaping);
+                let fast = shaped_width(text, 11.5, font, shaping);
+                assert_eq!(full.is_some(), fast.is_some(), "{text:?}");
+                if let (Some(full), Some(fast)) = (full, fast) {
+                    assert_eq!(full.width, fast.width, "{text:?}");
+                    assert_eq!(
+                        full.glyphs.iter().all(|g| g.glyph_id != 0),
+                        fast.all_glyphs_found,
+                        "{text:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
