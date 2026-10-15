@@ -809,7 +809,8 @@ fn shape_text_glyphs(
         return Some(Vec::new());
     }
 
-    let face = font.shaping.as_ref()?.face();
+    let shaping_face = font.shaping.as_ref()?;
+    let face = shaping_face.face();
     let scale = font.adjusted_font_size(font_size) / (face.units_per_em() as f32).max(1.0);
 
     let mut buffer = rustybuzz::UnicodeBuffer::new();
@@ -840,7 +841,7 @@ fn shape_text_glyphs(
         ));
     }
 
-    let shaped = rustybuzz::shape(face, &features, buffer);
+    let shaped = shaping_face.shape(&features, buffer);
     let infos = shaped.glyph_infos();
     let positions = shaped.glyph_positions();
     if infos.len() != positions.len() {
