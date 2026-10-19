@@ -1080,8 +1080,7 @@ fn authored_align_items_last_baseline(
     let mut best: Option<(bool, u32, usize, bool)> = None;
     for (source_idx, rule) in rules.iter().enumerate() {
         if rule.pseudo_element.is_some()
-            || !crate::parser::css::selector_matches_with_context(
-                &rule.selector,
+            || !rule.selector.matches(
                 el.tag_name(),
                 &classes,
                 el.id(),
@@ -1100,7 +1099,7 @@ fn authored_align_items_last_baseline(
             .get("align-items")
             .copied()
             .unwrap_or(false);
-        let specificity = crate::parser::css::specificity(&rule.selector);
+        let specificity = rule.selector.specificity();
         let is_last = raw.trim().eq_ignore_ascii_case("last baseline");
         if best.is_none_or(|(best_important, best_spec, best_source, _)| {
             (important, specificity, source_idx) >= (best_important, best_spec, best_source)

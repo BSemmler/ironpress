@@ -9,7 +9,6 @@ use crate::layout::elements::{
 use crate::layout::flow_metrics::BlockMargins;
 use crate::parser::css::{
     AncestorInfo, CssRule, CssValue, SelectorContext, parse_inline_style, parse_length,
-    selector_matches_with_context, specificity,
 };
 use crate::parser::dom::{DomNode, ElementNode};
 use crate::style::computed::{
@@ -801,15 +800,14 @@ fn winning_grid_track_declaration(
         if rule.pseudo_element.is_some() {
             continue;
         }
-        if selector_matches_with_context(
-            &rule.selector,
+        if rule.selector.matches(
             el.tag_name(),
             &classes,
             el.id(),
             &el.attributes,
             &selector_ctx,
         ) {
-            matched.push((specificity(&rule.selector), source_idx, rule));
+            matched.push((rule.selector.specificity(), source_idx, rule));
         }
     }
     matched.sort_by_key(|(spec, source_idx, _)| (*spec, *source_idx));
@@ -1212,15 +1210,14 @@ fn matched_grid_track_pattern(
         if rule.pseudo_element.is_some() {
             continue;
         }
-        if selector_matches_with_context(
-            &rule.selector,
+        if rule.selector.matches(
             el.tag_name(),
             &classes,
             el.id(),
             &el.attributes,
             &selector_ctx,
         ) {
-            matched.push((specificity(&rule.selector), source_idx, rule));
+            matched.push((rule.selector.specificity(), source_idx, rule));
         }
     }
     matched.sort_by_key(|(spec, source_idx, _)| (*spec, *source_idx));
@@ -1282,15 +1279,14 @@ fn matched_display_contents(
         if rule.pseudo_element.is_some() {
             continue;
         }
-        if selector_matches_with_context(
-            &rule.selector,
+        if rule.selector.matches(
             el.tag_name(),
             &classes,
             el.id(),
             &el.attributes,
             &selector_ctx,
         ) {
-            matched.push((specificity(&rule.selector), source_idx, rule));
+            matched.push((rule.selector.specificity(), source_idx, rule));
         }
     }
     matched.sort_by_key(|(spec, source_idx, _)| (*spec, *source_idx));

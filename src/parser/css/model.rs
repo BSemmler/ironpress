@@ -1,4 +1,5 @@
 use super::page_descriptors::PageSheetDescriptors;
+use super::selectors::Selector;
 use crate::parser::dom::ElementNode;
 use crate::types::{Color, EdgeSizes};
 use std::collections::HashMap;
@@ -299,7 +300,7 @@ pub enum PseudoElement {
 /// A CSS rule: a selector and its declarations.
 #[derive(Debug, Clone)]
 pub struct CssRule {
-    pub selector: String,
+    pub selector: Selector,
     pub declarations: StyleMap,
     /// If this rule targets a `::before` or `::after` pseudo-element.
     pub pseudo_element: Option<PseudoElement>,

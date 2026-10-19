@@ -36,7 +36,6 @@ pub(crate) use page_descriptors::{PageBleed, PageOrientation, PageSheetDescripto
 #[cfg(test)]
 pub(crate) use rules::parse_stylesheet;
 pub(crate) use rules::parse_stylesheet_with_context;
-pub(crate) use selectors::{selector_matches_with_context, specificity};
 pub(crate) use values::{
     is_css_wide_keyword, parse_color, parse_length, parse_property_value, split_radius_components,
 };

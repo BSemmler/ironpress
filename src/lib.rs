@@ -925,7 +925,7 @@ fn inject_gcpm_footnote_declarations(css: &str, rules: &mut Vec<parser::css::Css
                     .filter(|part| !part.is_empty())
                 {
                     rules.push(parser::css::CssRule {
-                        selector: selector.to_string(),
+                        selector: selector.into(),
                         declarations: map.clone(),
                         pseudo_element: None,
                     });
@@ -980,7 +980,7 @@ fn rules_with_font_face_local_sources(
             parser::css::CssValue::Keyword(local_name.clone()),
         );
         requested.push(parser::css::CssRule {
-            selector: format!("__font_face_local_source_{local_name}"),
+            selector: format!("__font_face_local_source_{local_name}").into(),
             declarations,
             pseudo_element: None,
         });

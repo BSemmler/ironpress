@@ -43,7 +43,7 @@ fn extract_counter_style_rules(css: &str) -> Vec<CssRule> {
         let declarations = parse_inline_style(&after_brace[..close_pos]);
         if !name.is_empty() && !declarations.properties.is_empty() {
             rules.push(CssRule {
-                selector: format!("@counter-style {}", name.to_ascii_lowercase()),
+                selector: format!("@counter-style {}", name.to_ascii_lowercase()).into(),
                 declarations,
                 pseudo_element: None,
             });
@@ -107,7 +107,7 @@ fn parse_rules_from(css: &str, rules: &mut Vec<CssRule>) {
         {
             let (selector, pseudo_element) = extract_pseudo_element(selector);
             rules.push(CssRule {
-                selector,
+                selector: selector.into(),
                 declarations: declarations.clone(),
                 pseudo_element,
             });

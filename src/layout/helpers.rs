@@ -77,8 +77,7 @@ pub(crate) fn authored_pseudo_keyword_property(
         if rule.pseudo_element != Some(pseudo) {
             continue;
         }
-        if !crate::parser::css::selector_matches_with_context(
-            &rule.selector,
+        if !rule.selector.matches(
             el.tag_name(),
             &class_refs,
             el.id(),
@@ -93,7 +92,7 @@ pub(crate) fn authored_pseudo_keyword_property(
         let candidate = (
             rule.declarations.is_important(property),
             0,
-            crate::parser::css::specificity(&rule.selector),
+            rule.selector.specificity(),
             source_idx,
             value.clone(),
         );
@@ -127,8 +126,7 @@ pub(crate) fn authored_property_value(
         if rule.pseudo_element.is_some() {
             continue;
         }
-        if !crate::parser::css::selector_matches_with_context(
-            &rule.selector,
+        if !rule.selector.matches(
             el.tag_name(),
             &class_refs,
             el.id(),
@@ -143,7 +141,7 @@ pub(crate) fn authored_property_value(
         let candidate = (
             rule.declarations.is_important(property),
             0,
-            crate::parser::css::specificity(&rule.selector),
+            rule.selector.specificity(),
             source_idx,
             value.clone(),
         );
