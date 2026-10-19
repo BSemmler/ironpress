@@ -316,7 +316,7 @@ fn compound_selector_matches(
 }
 
 fn sibling_selector_context<'a>(
-    ctx: &'a SelectorContext<'a>,
+    ctx: &SelectorContext<'a>,
     sibling_index: usize,
 ) -> SelectorContext<'a> {
     // Following siblings of the matched left-hand sibling: every sibling after
@@ -325,38 +325,26 @@ fn sibling_selector_context<'a>(
     // beyond `sibling_index` (the part of the anchor's preceding list that comes
     // after this sibling); forward siblings past the anchor are not needed for
     // sibling-combinator left-hand matching.
-    let following_siblings: Vec<(String, Vec<String>)> = ctx
-        .preceding_siblings
-        .iter()
-        .skip(sibling_index + 1)
-        .cloned()
-        .collect();
     SelectorContext {
-        ancestors: ctx.ancestors.clone(),
         child_index: sibling_index,
-        sibling_count: ctx.sibling_count,
-        preceding_siblings: ctx
-            .preceding_siblings
-            .iter()
-            .take(sibling_index)
-            .cloned()
-            .collect(),
-        following_siblings,
+        preceding_siblings: &ctx.preceding_siblings[..sibling_index],
+        following_siblings: &ctx.preceding_siblings[sibling_index + 1..],
         is_empty: false,
+        ..*ctx
     }
 }
 
 fn ancestor_selector_context<'a>(
-    ctx: &'a SelectorContext<'a>,
+    ctx: &SelectorContext<'a>,
     ancestor_index: usize,
 ) -> SelectorContext<'a> {
     let ancestor = &ctx.ancestors[ancestor_index];
     SelectorContext {
-        ancestors: ctx.ancestors.iter().take(ancestor_index).cloned().collect(),
+        ancestors: &ctx.ancestors[..ancestor_index],
         child_index: ancestor.child_index,
         sibling_count: ancestor.sibling_count,
-        preceding_siblings: ancestor.preceding_siblings.clone(),
-        following_siblings: ancestor.following_siblings.clone(),
+        preceding_siblings: ancestor.preceding_siblings,
+        following_siblings: ancestor.following_siblings,
         is_empty: ancestor.is_empty,
     }
 }
@@ -899,8 +887,8 @@ fn nth_child_of_matches(
         return false;
     }
 
-    let preceding = matching_sibling_count(&ctx.preceding_siblings, selector_list);
-    let following = matching_sibling_count(&ctx.following_siblings, selector_list);
+    let preceding = matching_sibling_count(ctx.preceding_siblings, selector_list);
+    let following = matching_sibling_count(ctx.following_siblings, selector_list);
     let filtered_index = if from_end { following } else { preceding };
     nth_child_matches(formula, filtered_index)
 }
@@ -987,20 +975,18 @@ fn selector_matches_virtual_body(selector: &str) -> bool {
         children: Vec::new(),
     };
     let attributes = HashMap::new();
-    let ctx = SelectorContext {
-        ancestors: vec![AncestorInfo {
-            element: &html,
-            child_index: 0,
-            sibling_count: 1,
-            preceding_siblings: Vec::new(),
-            following_siblings: Vec::new(),
-            is_empty: false,
-        }],
+    let ancestors = [AncestorInfo {
+        element: &html,
         child_index: 0,
         sibling_count: 1,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
+    }];
+    let ctx = SelectorContext {
+        ancestors: &ancestors,
+        sibling_count: 1,
+        ..SelectorContext::default()
     };
 
     compound_selector_matches(selector, "body", &[], None, &attributes, &ctx)
@@ -1226,8 +1212,8 @@ pub(crate) fn ancestor_info(element: &ElementNode) -> AncestorInfo<'_> {
         element,
         child_index: 0,
         sibling_count: 1,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     }
 }

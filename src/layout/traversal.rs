@@ -129,8 +129,8 @@ impl ElementSiblingPosition {
         Self {
             child_index: context.child_index,
             sibling_count: context.sibling_count,
-            preceding: context.preceding_siblings.clone(),
-            following: context.following_siblings.clone(),
+            preceding: context.preceding_siblings.to_vec(),
+            following: context.following_siblings.to_vec(),
         }
     }
 
@@ -140,7 +140,7 @@ impl ElementSiblingPosition {
     }
 
     pub(crate) fn ancestor<'dom>(
-        &self,
+        &'dom self,
         element: &'dom ElementNode,
         is_empty: bool,
     ) -> AncestorInfo<'dom> {
@@ -186,15 +186,18 @@ impl<'siblings> ElementSiblingContext<'siblings> {
 
     pub(crate) fn selector_context<'dom>(
         self,
-        ancestors: &[AncestorInfo<'dom>],
+        ancestors: &'dom [AncestorInfo<'dom>],
         is_empty: bool,
-    ) -> SelectorContext<'dom> {
+    ) -> SelectorContext<'dom>
+    where
+        'siblings: 'dom,
+    {
         SelectorContext {
-            ancestors: ancestors.to_vec(),
+            ancestors,
             child_index: self.child_index,
             sibling_count: self.sibling_count,
-            preceding_siblings: self.preceding.to_vec(),
-            following_siblings: self.following.to_vec(),
+            preceding_siblings: self.preceding,
+            following_siblings: self.following,
             is_empty,
         }
     }
@@ -203,13 +206,16 @@ impl<'siblings> ElementSiblingContext<'siblings> {
         self,
         element: &'dom ElementNode,
         is_empty: bool,
-    ) -> AncestorInfo<'dom> {
+    ) -> AncestorInfo<'dom>
+    where
+        'siblings: 'dom,
+    {
         AncestorInfo {
             element,
             child_index: self.child_index,
             sibling_count: self.sibling_count,
-            preceding_siblings: self.preceding.to_vec(),
-            following_siblings: self.following.to_vec(),
+            preceding_siblings: self.preceding,
+            following_siblings: self.following,
             is_empty,
         }
     }

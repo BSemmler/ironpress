@@ -345,11 +345,11 @@ fn has_direct_table_cell_child(
             child.id(),
             &selector_attributes_with_has(child),
             &SelectorContext {
-                ancestors: ancestors.to_vec(),
+                ancestors,
                 child_index,
                 sibling_count,
-                preceding_siblings: siblings[..child_index].to_vec(),
-                following_siblings: siblings[child_index + 1..].to_vec(),
+                preceding_siblings: &siblings[..child_index],
+                following_siblings: &siblings[child_index + 1..],
                 is_empty: element_is_empty(child),
             },
             font_metrics,
@@ -740,7 +740,7 @@ pub(crate) fn layout_block_element(
     let before_is_abs = before_style.is_some_and(|s| s.position.is_absolute());
     let after_is_abs = after_style.is_some_and(|s| s.position.is_absolute());
     let pseudo_selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
+        ancestors,
         ..SelectorContext::default()
     };
     let before_is_list_item = authored_pseudo_keyword_property(
@@ -2026,7 +2026,7 @@ pub(crate) fn layout_block_element(
                     let cls = child_el.class_list();
                     let cls_refs: Vec<&str> = cls.iter().map(|s| s.as_ref()).collect();
                     let child_selector_ctx = SelectorContext {
-                        ancestors: child_ancestors.to_vec(),
+                        ancestors: child_ancestors,
                         ..SelectorContext::default()
                     };
                     let child_style = compute_style_with_context_with_font_metrics(

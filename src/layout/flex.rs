@@ -19,8 +19,8 @@ use super::engine::{
     CounterState, ElementSiblingPosition, FilterApplication, FlexCell, FlexItemFragmentation,
     FlexLineId, FlexNestedOrigin, ForcedFlexLineBreak, LayoutBorder, LayoutTreeContext,
     PageBreakSide, PseudoBoxContext, TextLine, aspect_ratio_height, collects_as_inline_text,
-    emit_page_break_after, emit_page_break_before, flatten_element, has_background_paint,
-    measure_runs_width, resolve_padding_box_height,
+    element_sibling_list, emit_page_break_after, emit_page_break_before, flatten_element,
+    has_background_paint, measure_runs_width, resolve_padding_box_height,
 };
 use super::inline_formatting::{
     GeneratedBox, GeneratedContentStyles, GeneratedInlineContent, InlineContentSequence,
@@ -1305,42 +1305,21 @@ fn classify_flex_item_contents(
     env: &LayoutEnv,
 ) -> FlexItemContents {
     let mut contents = FlexItemContents::default();
-    let sibling_count = item
-        .children
-        .iter()
-        .filter(|node| matches!(node, DomNode::Element(_)))
-        .count();
+    let siblings = element_sibling_list(&item.children);
+    let mut element_index = 0usize;
 
-    for (node_index, node) in item.children.iter().enumerate() {
+    for node in &item.children {
         let DomNode::Element(child) = node else {
             continue;
         };
-        let sibling = |node: &DomNode| match node {
-            DomNode::Element(element) => Some((
-                element.tag_name().to_string(),
-                element
-                    .class_list()
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-            )),
-            DomNode::Text(_) => None,
-        };
+        let child_index = element_index;
+        element_index += 1;
         let selector_ctx = SelectorContext {
-            ancestors: ancestors.to_vec(),
-            child_index: item.children[..node_index]
-                .iter()
-                .filter(|node| matches!(node, DomNode::Element(_)))
-                .count(),
-            sibling_count,
-            preceding_siblings: item.children[..node_index]
-                .iter()
-                .filter_map(sibling)
-                .collect(),
-            following_siblings: item.children[node_index + 1..]
-                .iter()
-                .filter_map(sibling)
-                .collect(),
+            ancestors,
+            child_index,
+            sibling_count: siblings.len(),
+            preceding_siblings: &siblings[..child_index],
+            following_siblings: &siblings[child_index + 1..],
             is_empty: child.children.is_empty(),
         };
         let style = compute_style_with_context_with_font_metrics(

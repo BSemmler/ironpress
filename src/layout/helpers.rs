@@ -183,7 +183,7 @@ fn candidate_key<T>(candidate: &(bool, u8, u32, usize, T)) -> (bool, u8, u32, us
 }
 
 pub(crate) fn selector_context_from_ancestors<'a>(
-    ancestors: &[AncestorInfo<'a>],
+    ancestors: &'a [AncestorInfo<'a>],
     el: &'a ElementNode,
 ) -> SelectorContext<'a> {
     if let Some(current) = ancestors
@@ -191,16 +191,16 @@ pub(crate) fn selector_context_from_ancestors<'a>(
         .filter(|info| std::ptr::eq(info.element, el))
     {
         SelectorContext {
-            ancestors: ancestors[..ancestors.len().saturating_sub(1)].to_vec(),
+            ancestors: &ancestors[..ancestors.len().saturating_sub(1)],
             child_index: current.child_index,
             sibling_count: current.sibling_count,
-            preceding_siblings: current.preceding_siblings.clone(),
-            following_siblings: current.following_siblings.clone(),
+            preceding_siblings: current.preceding_siblings,
+            following_siblings: current.following_siblings,
             is_empty: current.is_empty,
         }
     } else {
         SelectorContext {
-            ancestors: ancestors.to_vec(),
+            ancestors,
             ..SelectorContext::default()
         }
     }
@@ -1412,7 +1412,7 @@ pub(crate) fn build_pseudo_block(
             runs.push(TextRun {
                 font_size: used_font_size(pseudo_style, fonts),
                 color: pseudo_style.color,
-                font_family: marker_font.clone(),
+                font_family: marker_font,
                 line_height_factor: text_run_line_height_factor(pseudo_style, fonts),
                 inline_box: Some(Box::new(bullet)),
                 text_shadow: pseudo_style.text_shadow.clone(),

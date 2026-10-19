@@ -754,7 +754,7 @@ fn is_anonymous_table_box(element: &ElementNode) -> bool {
 fn push_table_dom_ancestor<'a>(
     ancestors: &mut Vec<AncestorInfo<'a>>,
     element: &'a ElementNode,
-    siblings: ElementSiblingContext<'_>,
+    siblings: ElementSiblingContext<'a>,
 ) {
     if !is_anonymous_table_box(element) {
         ancestors.push(siblings.ancestor(element, element_is_empty(element)));
@@ -983,11 +983,11 @@ fn compute_column_style(
     }
     let classes = el.class_list();
     let selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
+        ancestors,
         child_index,
         sibling_count,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     };
     compute_style_with_context(
@@ -1327,11 +1327,11 @@ fn compute_caption_style(
 ) -> ComputedStyle {
     let caption_classes = caption_el.class_list();
     let caption_ctx = SelectorContext {
-        ancestors: table_ancestors.to_vec(),
+        ancestors: table_ancestors,
         child_index: caption_child_idx,
         sibling_count: section_count,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     };
     compute_style_with_context(
@@ -1364,8 +1364,8 @@ fn measure_caption_min_width(
         element: caption_el,
         child_index: caption_child_idx,
         sibling_count: section_count,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     });
     let mut runs = Vec::new();
@@ -1497,17 +1497,17 @@ fn resolve_fixed_table_columns(
                 element: section_el,
                 child_index: row_section_child_indices.first().copied().unwrap_or(0),
                 sibling_count: row_section_sibling_counts.first().copied().unwrap_or(0),
-                preceding_siblings: Vec::new(),
-                following_siblings: Vec::new(),
+                preceding_siblings: &[],
+                following_siblings: &[],
                 is_empty: false,
             });
         }
         let row_selector_ctx = SelectorContext {
-            ancestors: row_ancestors,
+            ancestors: &row_ancestors,
             child_index: row_section_indices.first().copied().unwrap_or(0),
             sibling_count: row_section_sizes.first().copied().unwrap_or(1),
-            preceding_siblings: Vec::new(),
-            following_siblings: Vec::new(),
+            preceding_siblings: &[],
+            following_siblings: &[],
             is_empty: false,
         };
         let row_classes = first_row.class_list();
@@ -1549,7 +1549,7 @@ fn resolve_fixed_table_columns(
             let colspan = parse_cell_colspan(cell_el);
 
             let cell_classes = cell_el.class_list();
-            let mut cell_ancestors = row_selector_ctx.ancestors.clone();
+            let mut cell_ancestors = row_selector_ctx.ancestors.to_vec();
             push_table_dom_ancestor(
                 &mut cell_ancestors,
                 first_row,
@@ -1683,8 +1683,8 @@ fn collapse_outer_horizontal_borders(
                 .get(row_idx)
                 .copied()
                 .unwrap_or(0),
-            preceding_siblings: Vec::new(),
-            following_siblings: Vec::new(),
+            preceding_siblings: &[],
+            following_siblings: &[],
             is_empty: false,
         });
     }
@@ -1706,11 +1706,11 @@ fn collapse_outer_horizontal_borders(
         });
     let row_classes = first_row.class_list();
     let row_selector_ctx = SelectorContext {
-        ancestors: row_ancestors,
+        ancestors: &row_ancestors,
         child_index: row_section_indices.get(row_idx).copied().unwrap_or(0),
         sibling_count: row_section_sizes.get(row_idx).copied().unwrap_or(1),
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     };
     let row_style =
@@ -1728,13 +1728,13 @@ fn collapse_outer_horizontal_borders(
                     &row_selector_ctx,
                 )
             });
-    let cells = table_row_cell_elements(first_row, &row_style, rules, &row_selector_ctx.ancestors);
+    let cells = table_row_cell_elements(first_row, &row_style, rules, row_selector_ctx.ancestors);
     if cells.is_empty() {
         return (0.0, 0.0);
     }
     let cell_count = cells.len();
     let authored_siblings = element_sibling_list(&first_row.children);
-    let mut cell_ancestors = row_selector_ctx.ancestors.clone();
+    let mut cell_ancestors = row_selector_ctx.ancestors.to_vec();
     push_table_dom_ancestor(
         &mut cell_ancestors,
         first_row,
@@ -1912,8 +1912,8 @@ pub(crate) fn flatten_table(
                     element: child_el,
                     child_index: section_child_idx,
                     sibling_count: section_count,
-                    preceding_siblings: Vec::new(),
-                    following_siblings: Vec::new(),
+                    preceding_siblings: &[],
+                    following_siblings: &[],
                     is_empty: false,
                 });
                 let group_style = compute_column_style(
@@ -2083,8 +2083,8 @@ pub(crate) fn flatten_table(
                             element: child_el,
                             child_index: section_child_idx,
                             sibling_count: section_count,
-                            preceding_siblings: Vec::new(),
-                            following_siblings: Vec::new(),
+                            preceding_siblings: &[],
+                            following_siblings: &[],
                             is_empty: false,
                         });
                         let colgroup_basis_style = {
@@ -2321,8 +2321,8 @@ pub(crate) fn flatten_table(
                     element: section_el,
                     child_index: row_section_child_indices[sizing_row_idx],
                     sibling_count: row_section_sibling_counts[sizing_row_idx],
-                    preceding_siblings: Vec::new(),
-                    following_siblings: Vec::new(),
+                    preceding_siblings: &[],
+                    following_siblings: &[],
                     is_empty: false,
                 });
             }
@@ -2340,11 +2340,11 @@ pub(crate) fn flatten_table(
                 .as_ref()
                 .is_some_and(|section_style| section_style.visibility == Visibility::Collapse);
             let sizing_row_ctx = SelectorContext {
-                ancestors: sizing_row_ancestors,
+                ancestors: &sizing_row_ancestors,
                 child_index: row_section_indices[sizing_row_idx],
                 sibling_count: row_section_sizes[sizing_row_idx],
-                preceding_siblings: Vec::new(),
-                following_siblings: Vec::new(),
+                preceding_siblings: &[],
+                following_siblings: &[],
                 is_empty: false,
             };
             let mut row_style =
@@ -2391,7 +2391,7 @@ pub(crate) fn flatten_table(
                         cell_el,
                         &row_style,
                         rules,
-                        &sizing_row_ctx.ancestors,
+                        sizing_row_ctx.ancestors,
                         row_child_idx,
                         row_child_count,
                     );
@@ -2433,7 +2433,7 @@ pub(crate) fn flatten_table(
                                 );
                             }
                             let cell_classes = cell_el.class_list();
-                            let mut cell_sizing_ancestors = sizing_row_ctx.ancestors.clone();
+                            let mut cell_sizing_ancestors = sizing_row_ctx.ancestors.to_vec();
                             push_table_dom_ancestor(
                                 &mut cell_sizing_ancestors,
                                 row,
@@ -2473,7 +2473,7 @@ pub(crate) fn flatten_table(
                             let authored_generated = authored_generated.boxes(cell_el);
                             let mut runs = Vec::new();
                             let mut nested_rows = Vec::new();
-                            let mut text_ancestors = cell_sizing_ctx.ancestors.clone();
+                            let mut text_ancestors = cell_sizing_ctx.ancestors.to_vec();
                             push_table_dom_ancestor(&mut text_ancestors, cell_el, cell_siblings);
                             generated_cell_content.append_before_measurement(
                                 &mut runs,
@@ -2769,8 +2769,8 @@ pub(crate) fn flatten_table(
                 element: section_el,
                 child_index: row_section_child_indices[row_idx],
                 sibling_count: row_section_sibling_counts[row_idx],
-                preceding_siblings: Vec::new(),
-                following_siblings: Vec::new(),
+                preceding_siblings: &[],
+                following_siblings: &[],
                 is_empty: false,
             });
         }
@@ -2806,11 +2806,11 @@ pub(crate) fn flatten_table(
             ))
         });
         let row_selector_ctx = SelectorContext {
-            ancestors: row_ancestors,
+            ancestors: &row_ancestors,
             child_index: section_idx,
             sibling_count: section_size,
-            preceding_siblings: Vec::new(),
-            following_siblings: Vec::new(),
+            preceding_siblings: &[],
+            following_siblings: &[],
             is_empty: false,
         };
         let mut row_style =
@@ -2883,7 +2883,7 @@ pub(crate) fn flatten_table(
                         cell_el,
                         &row_style,
                         rules,
-                        &row_selector_ctx.ancestors,
+                        row_selector_ctx.ancestors,
                         row_child_idx,
                         row_child_count,
                     );
@@ -2898,7 +2898,7 @@ pub(crate) fn flatten_table(
                     let span = colspan.min(num_cols - col_pos);
 
                     let cell_classes = cell_el.class_list();
-                    let mut cell_ancestors = row_selector_ctx.ancestors.clone();
+                    let mut cell_ancestors = row_selector_ctx.ancestors.to_vec();
                     push_table_dom_ancestor(
                         &mut cell_ancestors,
                         row,
@@ -3030,7 +3030,7 @@ pub(crate) fn flatten_table(
         let mut col_pos: usize = 0;
         let authored_siblings = element_sibling_list(&row.children);
         let row_cell_elements =
-            table_row_cell_elements(row, &row_style, rules, &row_selector_ctx.ancestors);
+            table_row_cell_elements(row, &row_style, rules, row_selector_ctx.ancestors);
         let mut child_iter = row_cell_elements.into_iter().enumerate();
 
         // Process cells, skipping occupied positions and inserting phantom cells
@@ -3082,7 +3082,7 @@ pub(crate) fn flatten_table(
             );
 
             let cell_classes = cell_el.class_list();
-            let mut cell_ancestors = row_selector_ctx.ancestors.clone();
+            let mut cell_ancestors = row_selector_ctx.ancestors.to_vec();
             push_table_dom_ancestor(
                 &mut cell_ancestors,
                 row,
@@ -3149,7 +3149,7 @@ pub(crate) fn flatten_table(
 
             let mut runs = Vec::new();
             let mut nested_rows = Vec::new();
-            let mut text_ancestors = cell_selector_ctx.ancestors.clone();
+            let mut text_ancestors = cell_selector_ctx.ancestors.to_vec();
             push_table_dom_ancestor(&mut text_ancestors, cell_el, cell_siblings);
             let (block_margin_top, block_margin_bottom) = table_cell_edge_block_margins(
                 &cell_el.children,
@@ -3604,8 +3604,8 @@ pub(crate) fn flatten_table(
             element: caption_el,
             child_index: *caption_child_idx,
             sibling_count: section_count,
-            preceding_siblings: Vec::new(),
-            following_siblings: Vec::new(),
+            preceding_siblings: &[],
+            following_siblings: &[],
             is_empty: false,
         });
         let mut caption_runs = Vec::new();
@@ -3771,10 +3771,7 @@ fn table_cell_edge_block_margins(
     ancestors: &[AncestorInfo],
     font_metrics: FontMetrics<'_>,
 ) -> (f32, f32) {
-    let element_sibling_count = nodes
-        .iter()
-        .filter(|node| matches!(node, DomNode::Element(_)))
-        .count();
+    let siblings = element_sibling_list(nodes);
 
     let mut first_margin_top = None;
     let mut last_margin_bottom = None;
@@ -3794,26 +3791,12 @@ fn table_cell_edge_block_margins(
             .iter()
             .filter(|node| matches!(node, DomNode::Element(_)))
             .count();
-        let preceding_siblings = nodes[..node_index]
-            .iter()
-            .filter_map(|node| match node {
-                DomNode::Element(element) => Some((
-                    element.tag_name().to_string(),
-                    element
-                        .class_list()
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
-                )),
-                _ => None,
-            })
-            .collect();
         let selector_ctx = SelectorContext {
-            ancestors: ancestors.to_vec(),
+            ancestors,
             child_index,
-            sibling_count: element_sibling_count,
-            preceding_siblings,
-            following_siblings: Vec::new(),
+            sibling_count: siblings.len(),
+            preceding_siblings: &siblings[..child_index],
+            following_siblings: &[],
             is_empty: false,
         };
         let child_style = compute_style_with_context_with_font_metrics(
@@ -4749,21 +4732,21 @@ mod cell_attribute_tests {
             None,
             &cell.attributes,
             &SelectorContext {
-                ancestors: vec![
+                ancestors: &vec![
                     AncestorInfo {
                         element: table,
                         child_index: 0,
                         sibling_count: 1,
-                        preceding_siblings: Vec::new(),
-                        following_siblings: Vec::new(),
+                        preceding_siblings: &[],
+                        following_siblings: &[],
                         is_empty: false,
                     },
                     AncestorInfo {
                         element: row,
                         child_index: 0,
                         sibling_count: 1,
-                        preceding_siblings: Vec::new(),
-                        following_siblings: Vec::new(),
+                        preceding_siblings: &[],
+                        following_siblings: &[],
                         is_empty: false,
                     },
                 ],

@@ -215,7 +215,7 @@ impl GridItemStyle {
     }
 
     fn descendant_ancestors<'dom>(
-        &self,
+        &'dom self,
         element: &'dom ElementNode,
         ancestors: &[AncestorInfo<'dom>],
     ) -> Vec<AncestorInfo<'dom>> {
@@ -789,11 +789,11 @@ fn winning_grid_track_declaration(
 ) -> Option<String> {
     let classes = el.class_list();
     let selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
+        ancestors,
         child_index: 0,
         sibling_count: 0,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     };
     let mut matched: Vec<(u32, usize, &CssRule)> = Vec::new();
@@ -1200,11 +1200,11 @@ fn matched_grid_track_pattern(
 ) -> Vec<f32> {
     let classes = el.class_list();
     let selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
+        ancestors,
         child_index: 0,
         sibling_count: 0,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     };
     let mut matched: Vec<(u32, usize, &CssRule)> = Vec::new();
@@ -1270,11 +1270,11 @@ fn matched_display_contents(
 ) -> bool {
     let classes = el.class_list();
     let selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
+        ancestors,
         child_index: 0,
         sibling_count: 0,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     };
     let mut matched: Vec<(u32, usize, &CssRule)> = Vec::new();
@@ -2020,11 +2020,11 @@ fn layout_grid_item_content_inner(
             child_el.id(),
             &child_el.attributes,
             &SelectorContext {
-                ancestors: child_ancestors.clone(),
+                ancestors: &child_ancestors,
                 child_index: idx,
                 sibling_count,
-                preceding_siblings: preceding.clone(),
-                following_siblings: Vec::new(),
+                preceding_siblings: &preceding,
+                following_siblings: &[],
                 is_empty: false,
             },
             env.font_metrics(),
@@ -2748,8 +2748,8 @@ fn layout_grid_container_inner(
         element: el,
         child_index: 0,
         sibling_count: 0,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     });
 
@@ -2773,11 +2773,11 @@ fn layout_grid_container_inner(
         .map(|(idx, child_el)| {
             let classes = child_el.class_list();
             let selector_ctx = SelectorContext {
-                ancestors: child_ancestors.clone(),
+                ancestors: &child_ancestors,
                 child_index: idx,
                 sibling_count: total_child_count,
-                preceding_siblings: child_siblings[..idx].to_vec(),
-                following_siblings: child_siblings[idx + 1..].to_vec(),
+                preceding_siblings: &child_siblings[..idx],
+                following_siblings: &child_siblings[idx + 1..],
                 is_empty: false,
             };
             let principal = compute_style_with_context_with_font_metrics(
@@ -2808,11 +2808,11 @@ fn layout_grid_container_inner(
     let mut child_styles: Vec<GridItemStyle> = Vec::new();
 
     let container_selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
+        ancestors,
         child_index: 0,
         sibling_count: 0,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     };
     let generated_styles =
@@ -2849,8 +2849,8 @@ fn layout_grid_container_inner(
                         element: child_el,
                         child_index: direct_idx,
                         sibling_count: total_child_count,
-                        preceding_siblings: Vec::new(),
-                        following_siblings: Vec::new(),
+                        preceding_siblings: &[],
+                        following_siblings: &[],
                         is_empty: false,
                     });
                     let flattened: Vec<&ElementNode> = child_el
@@ -2865,11 +2865,11 @@ fn layout_grid_container_inner(
                     for (flat_idx, flat_el) in flattened.into_iter().enumerate() {
                         let flat_classes = flat_el.class_list();
                         let flat_selector_context = SelectorContext {
-                            ancestors: wrapper_ancestors.clone(),
+                            ancestors: &wrapper_ancestors,
                             child_index: flat_idx,
                             sibling_count: flattened_count,
-                            preceding_siblings: Vec::new(),
-                            following_siblings: Vec::new(),
+                            preceding_siblings: &[],
+                            following_siblings: &[],
                             is_empty: false,
                         };
                         let flat_style = compute_style_with_context_with_font_metrics(
@@ -3623,8 +3623,8 @@ fn layout_grid_container_inner(
                 element: child_el,
                 child_index: idx,
                 sibling_count: total_child_count,
-                preceding_siblings: Vec::new(),
-                following_siblings: Vec::new(),
+                preceding_siblings: &[],
+                following_siblings: &[],
                 is_empty: false,
             });
             let child_ctx = ctx

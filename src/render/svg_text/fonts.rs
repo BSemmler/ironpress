@@ -305,14 +305,14 @@ mod tests {
         let arabic_source_key = crate::font_face_source_key(&family_key, 1);
         let latin = font_covering('A', "Composite Latin");
         let fonts = HashMap::from([
-            (family_key.clone(), latin.clone()),
-            (latin_range_key.clone(), latin),
+            (family_key, latin.clone()),
+            (latin_range_key, latin),
             (
                 latin_source_key.clone(),
                 font_covering('A', "Composite Latin"),
             ),
             (
-                arabic_range_key.clone(),
+                arabic_range_key,
                 font_covering('\u{0627}', "Composite Arabic"),
             ),
             (

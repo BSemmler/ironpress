@@ -4937,7 +4937,7 @@ fn reset_to_initial(style: &mut ComputedStyle, property: &str) {
         "widows" => style.widows = default.widows,
         "position" => {
             style.position = default.position;
-            style.running_name = default.running_name.clone();
+            style.running_name = default.running_name;
         }
         "top" => {
             style.top = default.top;
@@ -4963,7 +4963,7 @@ fn reset_to_initial(style: &mut ComputedStyle, property: &str) {
         "transform" => style.transform = default.transform,
         "perspective" => style.perspective = default.perspective,
         "transform-box" => style.transform_box = default.transform_box,
-        "box-shadow" => style.box_shadow = default.box_shadow.clone(),
+        "box-shadow" => style.box_shadow = default.box_shadow,
         "flex-direction" => style.flex_direction = default.flex_direction,
         "justify-content" => style.justify_content = default.justify_content,
         "align-items" => style.align_items = default.align_items,
@@ -5000,10 +5000,10 @@ fn reset_to_initial(style: &mut ComputedStyle, property: &str) {
         "object-position" => style.object_position = default.object_position,
         "image-rendering" => style.image_rendering = default.image_rendering,
         "background" => style.reset_background(),
-        "list-style-type" => style.list_style_type = default.list_style_type.clone(),
+        "list-style-type" => style.list_style_type = default.list_style_type,
         "list-style-position" => style.list_style_position = default.list_style_position,
         "marker-side" => style.marker_side_match_parent = default.marker_side_match_parent,
-        "list-style-image" => style.list_style_image = default.list_style_image.clone(),
+        "list-style-image" => style.list_style_image = default.list_style_image,
         "content" => style.content = default.content,
         "counter-reset" => style.counter_reset = default.counter_reset,
         "counter-increment" => style.counter_increment = default.counter_increment,
@@ -5024,7 +5024,7 @@ fn reset_to_initial(style: &mut ComputedStyle, property: &str) {
         "column-span" => style.column_span_all = default.column_span_all,
         "column-fill" => style.column_fill_auto = default.column_fill_auto,
         "filter" => {
-            style.filter = default.filter.clone();
+            style.filter = default.filter;
         }
         _ => {}
     }
@@ -23068,7 +23068,7 @@ mod tests {
     fn pseudo_element_style_inherits_color() {
         use crate::parser::css::{PseudoElement, parse_stylesheet};
         let parent = ComputedStyle::default();
-        let mut parent_with_color = parent.clone();
+        let mut parent_with_color = parent;
         parent_with_color.color = Color::rgb(255, 0, 0);
         let rules = parse_stylesheet(".box::before { content: 'X'; }");
         let ctx = SelectorContext::default();

@@ -351,10 +351,10 @@ fn inline_atomic_cell(
     selector_context: &SelectorContext<'_>,
     env: &mut LayoutEnv,
 ) -> Option<(FlexCell, f32)> {
-    let ancestors = selector_context.ancestors.as_slice();
+    let ancestors = selector_context.ancestors;
     let child_index = selector_context.child_index;
     let sibling_count = selector_context.sibling_count;
-    let mut child_ancestors = selector_context.ancestors.clone();
+    let mut child_ancestors = selector_context.ancestors.to_vec();
     child_ancestors.push(selector_context.as_ancestor(child_el));
 
     // Replacedness is independent of whether the outer display was authored as
@@ -726,11 +726,11 @@ pub(crate) fn layout_inline_mixed_sequence_with_env(
             DomNode::Element(el) => {
                 let classes = el.class_list();
                 let selector_ctx = SelectorContext {
-                    ancestors: ancestors.to_vec(),
+                    ancestors,
                     child_index: element_index,
                     sibling_count: element_count,
-                    preceding_siblings: preceding_siblings.clone(),
-                    following_siblings: forward_siblings(&sibling_list, element_index).to_vec(),
+                    preceding_siblings: &preceding_siblings,
+                    following_siblings: forward_siblings(&sibling_list, element_index),
                     is_empty: false,
                 };
                 let child_style = compute_style_with_context_with_font_metrics(
@@ -992,11 +992,11 @@ fn layout_inline_block_group_inner(
     for (idx, (child_el, space_before)) in elements.iter().enumerate() {
         let classes = child_el.class_list();
         let selector_ctx = SelectorContext {
-            ancestors: ancestors.to_vec(),
+            ancestors,
             child_index: idx,
             sibling_count: child_count,
-            preceding_siblings: sibling_list[..idx].to_vec(),
-            following_siblings: sibling_list[idx + 1..].to_vec(),
+            preceding_siblings: &sibling_list[..idx],
+            following_siblings: &sibling_list[idx + 1..],
             is_empty: false,
         };
         let child_style = compute_style_with_context_with_font_metrics(
@@ -1043,8 +1043,8 @@ fn layout_inline_block_group_inner(
             element: child_el,
             child_index: idx,
             sibling_count: child_count,
-            preceding_siblings: Vec::new(),
-            following_siblings: Vec::new(),
+            preceding_siblings: &[],
+            following_siblings: &[],
             is_empty: false,
         });
         if child_style.display == Display::InlineGrid

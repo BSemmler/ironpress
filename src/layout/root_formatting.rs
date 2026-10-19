@@ -71,12 +71,12 @@ impl DocumentRootStyles {
             None,
             &body_element.attributes,
             &SelectorContext {
-                ancestors: vec![AncestorInfo {
+                ancestors: &[AncestorInfo {
                     element: &html_element,
                     child_index: 0,
                     sibling_count: 1,
-                    preceding_siblings: Vec::new(),
-                    following_siblings: Vec::new(),
+                    preceding_siblings: &[],
+                    following_siblings: &[],
                     is_empty: false,
                 }],
                 sibling_count: 1,
@@ -161,8 +161,8 @@ impl RootFormattingContext {
             element: &self.element,
             child_index: 0,
             sibling_count: 1,
-            preceding_siblings: Vec::new(),
-            following_siblings: Vec::new(),
+            preceding_siblings: &[],
+            following_siblings: &[],
             is_empty: self.element.children.is_empty(),
         }]
     }
