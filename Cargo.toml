@@ -97,6 +97,10 @@ tempfile = "3"
 name = "conversion"
 harness = false
 
+[[bench]]
+name = "selectors"
+harness = false
+
 [profile.bench]
 opt-level = 3
 lto = "fat"
