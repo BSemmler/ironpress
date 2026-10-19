@@ -23,6 +23,7 @@ use crate::style::computed::{BorderCollapse, Clear, Float, Position};
 #[cfg(test)]
 use crate::types::Color;
 
+use super::authored::AuthoredCascade;
 use super::block::layout_block_element;
 #[cfg(test)]
 use super::cells::CellBoxHolder;
@@ -2308,13 +2309,8 @@ fn collect_plain_text(nodes: &[DomNode], out: &mut String) {
     }
 }
 
-fn string_set_marker(
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-) -> Option<LayoutNode> {
-    let raw = match authored_property_value(el, rules, ancestors, selector_ctx, "string-set")? {
+fn string_set_marker(el: &ElementNode, authored: &AuthoredCascade) -> Option<LayoutNode> {
+    let raw = match authored.value("string-set")? {
         crate::parser::css::CssValue::Keyword(value) => value,
         _ => return None,
     };
@@ -3310,7 +3306,8 @@ pub(crate) fn flatten_nodes(
                     &selector_ctx,
                     env.font_metrics(),
                 );
-                if let Some(marker) = string_set_marker(el, env.rules, ancestors, &selector_ctx) {
+                let authored = AuthoredCascade::new(el, env.rules, &selector_ctx);
+                if let Some(marker) = string_set_marker(el, &authored) {
                     output.push(marker);
                 }
                 if let Some(marker) = target_anchor_marker(el) {
@@ -3521,9 +3518,9 @@ fn flatten_element_with_running_mode(
         ),
         env.font_metrics(),
     );
-    let authored_display_contents =
-        authored_display_contents(el, env.rules, ancestors, &selector_ctx);
-    apply_authored_insets(&mut style, el, env.rules, ancestors, &selector_ctx);
+    let authored = AuthoredCascade::new(el, env.rules, &selector_ctx);
+    let authored_display_contents = authored.display_contents();
+    authored.apply_insets(&mut style);
     style.transform = effective_transform(&style, parent_style, ctx);
     // Resolve `filter: url(#id)` (css-filter-effects-1 §3): look up the inline
     // SVG `<filter>` element by id and translate its `feColorMatrix` primitives
@@ -3577,7 +3574,7 @@ fn flatten_element_with_running_mode(
             output.push(marker);
         }
         emit_page_break_before(&style, output);
-        if let Some(marker) = string_set_marker(el, env.rules, ancestors, &selector_ctx) {
+        if let Some(marker) = string_set_marker(el, &authored) {
             output.push(marker);
         }
         element_output_start = output.len();
@@ -4974,7 +4971,7 @@ fn flex_element_with_display_contents_children(
                     following_siblings: forward_siblings(&sibling_list, element_index),
                     is_empty: element_is_empty(child_el),
                 };
-                if authored_display_contents(child_el, env.rules, ancestors, &selector_ctx) {
+                if AuthoredCascade::new(child_el, env.rules, &selector_ctx).display_contents() {
                     changed = true;
                     children.extend(child_el.children.iter().cloned());
                 } else {

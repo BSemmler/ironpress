@@ -14,21 +14,19 @@ use crate::style::computed::{
 use crate::types::EdgeSizes;
 use std::collections::HashMap;
 
+use super::authored::{AuthoredCascade, LayoutOverflowKeyword};
 use super::context::{ContainingBlock, LayoutContext, LayoutEnv};
 use super::engine::{
     ElementSiblingContext, LayoutBorder, LayoutTreeContext, TextLine, TextRun, element_is_empty,
     element_sibling_list, emit_page_break_after, flatten_element, flatten_nodes, forward_siblings,
 };
 use super::helpers::{
-    BackgroundFields, LayoutOverflowKeyword, PseudoBoxContext, aspect_ratio_height,
-    authored_intrinsic_width_keyword, authored_keyword_property, authored_line_clamp,
-    authored_overflow_axes, authored_overflow_clip_margin, authored_pseudo_keyword_property,
-    authored_scrollbar_gutter, build_pseudo_block, establishes_bfc_with_overflow,
-    has_background_paint, heading_level, measure_lines_width, pseudo_is_block_like,
-    push_block_pseudo, recurses_as_layout_child, resolve_abs_containing_block,
-    resolve_absolute_descendants_containing_block, resolve_content_box_height, resolve_inset,
-    resolve_padding_box_height, resolve_relative_offsets, selector_attributes_with_has,
-    selector_context_from_ancestors,
+    BackgroundFields, PseudoBoxContext, aspect_ratio_height, build_pseudo_block,
+    establishes_bfc_with_overflow, has_background_paint, heading_level, measure_lines_width,
+    pseudo_is_block_like, push_block_pseudo, recurses_as_layout_child,
+    resolve_abs_containing_block, resolve_absolute_descendants_containing_block,
+    resolve_content_box_height, resolve_inset, resolve_padding_box_height,
+    resolve_relative_offsets, selector_attributes_with_has, selector_context_from_ancestors,
 };
 use super::inline::{
     layout_inline_block_group_with_spacing, layout_inline_mixed_sequence_with_env,
@@ -473,10 +471,10 @@ pub(crate) fn layout_block_element(
     } else if margin_h > 0.0 {
         block_w = (available_width - margin_h).max(0.0);
     }
-    let authored_max_width_keyword =
-        authored_intrinsic_width_keyword(el, env.rules, child_ancestors, "max-width");
-    let authored_min_width_keyword =
-        authored_intrinsic_width_keyword(el, env.rules, child_ancestors, "min-width");
+    let selector_ctx = selector_context_from_ancestors(child_ancestors, el);
+    let authored = AuthoredCascade::new(el, env.rules, &selector_ctx);
+    let authored_max_width_keyword = authored.intrinsic_width_keyword("max-width");
+    let authored_min_width_keyword = authored.intrinsic_width_keyword("min-width");
 
     // CSS 2.1 § 10.4: percentage min-/max-width also resolve against the
     // containing block content width. Min wins over max (the floor is applied
@@ -596,19 +594,8 @@ pub(crate) fn layout_block_element(
     let auto_offset_left =
         InlineOffset::resolve_block_start(style, available_width, block_w).value();
 
-    let selector_ctx = selector_context_from_ancestors(child_ancestors, el);
-    let mut overflow_axes =
-        authored_overflow_axes(el, style, env.rules, child_ancestors, &selector_ctx);
-    if authored_keyword_property(
-        el,
-        env.rules,
-        child_ancestors,
-        &selector_ctx,
-        "scrollbar-width",
-    )
-    .as_deref()
-        == Some("none")
-    {
+    let mut overflow_axes = authored.overflow_axes(style);
+    if authored.keyword("scrollbar-width").as_deref() == Some("none") {
         if matches!(
             overflow_axes.x,
             LayoutOverflowKeyword::Scroll | LayoutOverflowKeyword::Auto
@@ -622,14 +609,13 @@ pub(crate) fn layout_block_element(
             overflow_axes.y = LayoutOverflowKeyword::Hidden;
         }
     }
-    let overflow_clip_margin =
-        authored_overflow_clip_margin(el, env.rules, child_ancestors, &selector_ctx);
-    let line_clamp = authored_line_clamp(el, env.rules, child_ancestors, &selector_ctx);
+    let overflow_clip_margin = authored.overflow_clip_margin();
+    let line_clamp = authored.line_clamp();
     let (scrollbar_gutter_left, scrollbar_gutter_right) = if matches!(
         overflow_axes.y,
         LayoutOverflowKeyword::Hidden | LayoutOverflowKeyword::Scroll | LayoutOverflowKeyword::Auto
     ) {
-        authored_scrollbar_gutter(el, env.rules, child_ancestors, &selector_ctx)
+        authored.scrollbar_gutter()
     } else {
         (0.0, 0.0)
     };
@@ -743,22 +729,12 @@ pub(crate) fn layout_block_element(
         ancestors,
         ..SelectorContext::default()
     };
-    let before_is_list_item = authored_pseudo_keyword_property(
-        el,
-        env.rules,
-        &pseudo_selector_ctx,
-        PseudoElement::Before,
-        "display",
-    )
-    .is_some_and(|value| value.split_whitespace().any(|part| part == "list-item"));
-    let after_is_list_item = authored_pseudo_keyword_property(
-        el,
-        env.rules,
-        &pseudo_selector_ctx,
-        PseudoElement::After,
-        "display",
-    )
-    .is_some_and(|value| value.split_whitespace().any(|part| part == "list-item"));
+    let before_is_list_item =
+        AuthoredCascade::pseudo(el, env.rules, &pseudo_selector_ctx, PseudoElement::Before)
+            .display_list_item();
+    let after_is_list_item =
+        AuthoredCascade::pseudo(el, env.rules, &pseudo_selector_ctx, PseudoElement::After)
+            .display_list_item();
     // A non-absolute block-level `::before`/`::after` (e.g.
     // `.card::before { content: "HEADER"; display: block }`) is an in-flow
     // block-level child of the originating element: it must be laid out INSIDE
