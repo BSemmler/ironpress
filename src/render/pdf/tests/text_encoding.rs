@@ -14,7 +14,7 @@
                         metadata: Default::default(),
                     },
                     TextLine {
-                        runs: vec![empty_run.clone(), non_empty_run],
+                        runs: vec![empty_run, non_empty_run],
                         height: 14.0,
                         baseline_ascent: None,
                         x_offset: 0.0,

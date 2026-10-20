@@ -1,13 +1,14 @@
+use crate::layout::authored::LayoutOverflowAxes;
 use crate::layout::elements::LayoutNode;
 use crate::layout::flow_metrics::BlockMargins;
-use crate::parser::css::{AncestorInfo, CssRule, CssValue, PseudoElement, SelectorContext};
+use crate::parser::css::{AncestorInfo, SelectorContext};
 use crate::parser::dom::{DomNode, ElementNode, HtmlTag};
 use crate::parser::ttf::{GlyphSideBearings, TtfFont};
 use crate::style::computed::{
     BackgroundClip, BackgroundOrigin, BackgroundPosition, BackgroundRepeat, BackgroundSize,
     BoxSizing, ComputedStyle, ConicGradient, ContentItem, Display, FontFamily, FontWeight,
-    IntrinsicWidthKeyword, LEADER_PLACEHOLDER_END, LEADER_PLACEHOLDER_START, LinearGradient,
-    RadialGradient, VerticalAlign, Visibility,
+    LEADER_PLACEHOLDER_END, LEADER_PLACEHOLDER_START, LinearGradient, RadialGradient,
+    VerticalAlign, Visibility,
 };
 use crate::types::EdgeSizes;
 use std::collections::HashMap;
@@ -48,142 +49,8 @@ fn collect_descendant_classes(el: &ElementNode, out: &mut Vec<String>) {
     }
 }
 
-pub(crate) fn authored_keyword_property(
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-    property: &str,
-) -> Option<String> {
-    match authored_property_value(el, rules, ancestors, selector_ctx, property)? {
-        CssValue::Keyword(value) => Some(value.to_ascii_lowercase()),
-        _ => None,
-    }
-}
-
-pub(crate) fn authored_pseudo_keyword_property(
-    el: &ElementNode,
-    rules: &[CssRule],
-    selector_ctx: &SelectorContext,
-    pseudo: PseudoElement,
-    property: &str,
-) -> Option<String> {
-    let mut winner: Option<(bool, u8, u32, usize, CssValue)> = None;
-    let classes = el.class_list();
-    let class_refs: Vec<&str> = classes.iter().map(|s| s.as_ref()).collect();
-    let selector_attrs = selector_attributes_with_has(el);
-
-    for (source_idx, rule) in rules.iter().enumerate() {
-        if rule.pseudo_element != Some(pseudo) {
-            continue;
-        }
-        if !crate::parser::css::selector_matches_with_context(
-            &rule.selector,
-            el.tag_name(),
-            &class_refs,
-            el.id(),
-            &selector_attrs,
-            selector_ctx,
-        ) {
-            continue;
-        }
-        let Some(value) = rule.declarations.get(property) else {
-            continue;
-        };
-        let candidate = (
-            rule.declarations.is_important(property),
-            0,
-            crate::parser::css::specificity(&rule.selector),
-            source_idx,
-            value.clone(),
-        );
-        if winner
-            .as_ref()
-            .is_none_or(|current| candidate_key(&candidate) >= candidate_key(current))
-        {
-            winner = Some(candidate);
-        }
-    }
-
-    match winner.map(|(_, _, _, _, value)| value)? {
-        CssValue::Keyword(value) => Some(value.to_ascii_lowercase()),
-        _ => None,
-    }
-}
-
-pub(crate) fn authored_property_value(
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-    property: &str,
-) -> Option<CssValue> {
-    let mut winner: Option<(bool, u8, u32, usize, CssValue)> = None;
-    let classes = el.class_list();
-    let class_refs: Vec<&str> = classes.iter().map(|s| s.as_ref()).collect();
-    let selector_attrs = selector_attributes_with_has(el);
-
-    for (source_idx, rule) in rules.iter().enumerate() {
-        if rule.pseudo_element.is_some() {
-            continue;
-        }
-        if !crate::parser::css::selector_matches_with_context(
-            &rule.selector,
-            el.tag_name(),
-            &class_refs,
-            el.id(),
-            &selector_attrs,
-            selector_ctx,
-        ) {
-            continue;
-        }
-        let Some(value) = rule.declarations.get(property) else {
-            continue;
-        };
-        let candidate = (
-            rule.declarations.is_important(property),
-            0,
-            crate::parser::css::specificity(&rule.selector),
-            source_idx,
-            value.clone(),
-        );
-        if winner
-            .as_ref()
-            .is_none_or(|current| candidate_key(&candidate) >= candidate_key(current))
-        {
-            winner = Some(candidate);
-        }
-    }
-
-    if let Some(style_attr) = el.style_attr() {
-        let inline = crate::parser::css::parse_inline_style(style_attr);
-        if let Some(value) = inline.get(property) {
-            let candidate = (
-                inline.is_important(property),
-                1,
-                u32::MAX,
-                usize::MAX,
-                value.clone(),
-            );
-            if winner
-                .as_ref()
-                .is_none_or(|current| candidate_key(&candidate) >= candidate_key(current))
-            {
-                winner = Some(candidate);
-            }
-        }
-    }
-
-    let _ = ancestors;
-    winner.map(|(_, _, _, _, value)| value)
-}
-
-fn candidate_key<T>(candidate: &(bool, u8, u32, usize, T)) -> (bool, u8, u32, usize) {
-    (candidate.0, candidate.1, candidate.2, candidate.3)
-}
-
 pub(crate) fn selector_context_from_ancestors<'a>(
-    ancestors: &[AncestorInfo<'a>],
+    ancestors: &'a [AncestorInfo<'a>],
     el: &'a ElementNode,
 ) -> SelectorContext<'a> {
     if let Some(current) = ancestors
@@ -191,309 +58,18 @@ pub(crate) fn selector_context_from_ancestors<'a>(
         .filter(|info| std::ptr::eq(info.element, el))
     {
         SelectorContext {
-            ancestors: ancestors[..ancestors.len().saturating_sub(1)].to_vec(),
+            ancestors: &ancestors[..ancestors.len().saturating_sub(1)],
             child_index: current.child_index,
             sibling_count: current.sibling_count,
-            preceding_siblings: current.preceding_siblings.clone(),
-            following_siblings: current.following_siblings.clone(),
+            preceding_siblings: current.preceding_siblings,
+            following_siblings: current.following_siblings,
             is_empty: current.is_empty,
         }
     } else {
         SelectorContext {
-            ancestors: ancestors.to_vec(),
+            ancestors,
             ..SelectorContext::default()
         }
-    }
-}
-
-pub(crate) fn authored_intrinsic_width_keyword(
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    property: &str,
-) -> Option<IntrinsicWidthKeyword> {
-    let selector_ctx = selector_context_from_ancestors(ancestors, el);
-    match authored_keyword_property(el, rules, ancestors, &selector_ctx, property)?.as_str() {
-        "min-content" => Some(IntrinsicWidthKeyword::MinContent),
-        "max-content" => Some(IntrinsicWidthKeyword::MaxContent),
-        "fit-content" => Some(IntrinsicWidthKeyword::FitContent),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LayoutOverflowKeyword {
-    Visible,
-    Clip,
-    Hidden,
-    Scroll,
-    Auto,
-}
-
-impl LayoutOverflowKeyword {
-    pub(crate) fn clips(self) -> bool {
-        !matches!(self, Self::Visible)
-    }
-
-    pub(crate) fn establishes_bfc(self) -> bool {
-        matches!(self, Self::Hidden | Self::Scroll | Self::Auto)
-    }
-
-    fn is_scrollable(self) -> bool {
-        matches!(self, Self::Hidden | Self::Scroll | Self::Auto)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct LayoutOverflowAxes {
-    pub(crate) x: LayoutOverflowKeyword,
-    pub(crate) y: LayoutOverflowKeyword,
-}
-
-impl LayoutOverflowAxes {
-    pub(crate) fn clips_any(self) -> bool {
-        self.x.clips() || self.y.clips()
-    }
-
-    pub(crate) fn establishes_bfc(self) -> bool {
-        self.x.establishes_bfc() || self.y.establishes_bfc()
-    }
-}
-
-fn parse_layout_overflow_keyword(value: &str) -> LayoutOverflowKeyword {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "clip" => LayoutOverflowKeyword::Clip,
-        "hidden" => LayoutOverflowKeyword::Hidden,
-        "scroll" => LayoutOverflowKeyword::Scroll,
-        "auto" => LayoutOverflowKeyword::Auto,
-        _ => LayoutOverflowKeyword::Visible,
-    }
-}
-
-fn coerce_layout_overflow_axis(
-    this: LayoutOverflowKeyword,
-    other: LayoutOverflowKeyword,
-) -> LayoutOverflowKeyword {
-    match this {
-        LayoutOverflowKeyword::Visible if other.is_scrollable() => LayoutOverflowKeyword::Auto,
-        LayoutOverflowKeyword::Clip if other.is_scrollable() => LayoutOverflowKeyword::Hidden,
-        value => value,
-    }
-}
-
-pub(crate) fn authored_overflow_axes(
-    el: &ElementNode,
-    style: &ComputedStyle,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-) -> LayoutOverflowAxes {
-    let from_computed = |value| match value {
-        crate::style::computed::Overflow::Visible => LayoutOverflowKeyword::Visible,
-        crate::style::computed::Overflow::Hidden => LayoutOverflowKeyword::Hidden,
-        crate::style::computed::Overflow::Scroll => LayoutOverflowKeyword::Scroll,
-        crate::style::computed::Overflow::Auto => LayoutOverflowKeyword::Auto,
-    };
-    let mut x = from_computed(style.overflow_x);
-    let mut y = from_computed(style.overflow_y);
-    let mut saw_authored = false;
-
-    if let Some(value) = authored_keyword_property(el, rules, ancestors, selector_ctx, "overflow") {
-        let mut parts = value.split_whitespace();
-        if let Some(first) = parts.next() {
-            x = parse_layout_overflow_keyword(first);
-            y = parts.next().map(parse_layout_overflow_keyword).unwrap_or(x);
-            saw_authored = true;
-        }
-    }
-    if let Some(value) = authored_keyword_property(el, rules, ancestors, selector_ctx, "overflow-x")
-    {
-        x = parse_layout_overflow_keyword(&value);
-        saw_authored = true;
-    }
-    if let Some(value) = authored_keyword_property(el, rules, ancestors, selector_ctx, "overflow-y")
-    {
-        y = parse_layout_overflow_keyword(&value);
-        saw_authored = true;
-    }
-    // Horizontal writing-mode is the only mode currently laid out by the block
-    // engine, so logical inline/block overflow map to x/y here.
-    if let Some(value) =
-        authored_keyword_property(el, rules, ancestors, selector_ctx, "overflow-inline")
-    {
-        x = parse_layout_overflow_keyword(&value);
-        saw_authored = true;
-    }
-    if let Some(value) =
-        authored_keyword_property(el, rules, ancestors, selector_ctx, "overflow-block")
-    {
-        y = parse_layout_overflow_keyword(&value);
-        saw_authored = true;
-    }
-
-    if saw_authored {
-        LayoutOverflowAxes {
-            x: coerce_layout_overflow_axis(x, y),
-            y: coerce_layout_overflow_axis(y, x),
-        }
-    } else {
-        LayoutOverflowAxes { x, y }
-    }
-}
-
-pub(crate) fn authored_line_clamp(
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-) -> Option<usize> {
-    for property in ["line-clamp", "-webkit-line-clamp"] {
-        let Some(value) = authored_property_value(el, rules, ancestors, selector_ctx, property)
-        else {
-            continue;
-        };
-        let n = match value {
-            CssValue::Number(n) => n,
-            CssValue::Keyword(raw) => raw
-                .split_whitespace()
-                .find_map(|part| part.parse::<f32>().ok())?,
-            _ => continue,
-        };
-        if n.is_finite() && n >= 1.0 {
-            return Some(n.floor() as usize);
-        }
-    }
-    None
-}
-
-pub(crate) fn authored_overflow_clip_margin(
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-) -> f32 {
-    match authored_property_value(el, rules, ancestors, selector_ctx, "overflow-clip-margin") {
-        Some(CssValue::Length(v)) if v.is_finite() => v.max(0.0),
-        Some(CssValue::Number(v)) if v.is_finite() => v.max(0.0),
-        _ => 0.0,
-    }
-}
-
-pub(crate) fn authored_scrollbar_gutter(
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-) -> (f32, f32) {
-    let Some(value) =
-        authored_keyword_property(el, rules, ancestors, selector_ctx, "scrollbar-gutter")
-    else {
-        return (0.0, 0.0);
-    };
-    if !value.split_whitespace().any(|part| part == "stable") {
-        return (0.0, 0.0);
-    }
-    let gutter = 15.0 * 0.75;
-    if value.split_whitespace().any(|part| part == "both-edges") {
-        (gutter, gutter)
-    } else {
-        (0.0, gutter)
-    }
-}
-
-pub(crate) fn authored_display_contents(
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-) -> bool {
-    authored_keyword_property(el, rules, ancestors, selector_ctx, "display")
-        .is_some_and(|value| value == "contents")
-}
-
-pub(crate) fn apply_authored_insets(
-    style: &mut ComputedStyle,
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-) {
-    if let Some(value) = authored_property_value(el, rules, ancestors, selector_ctx, "inset") {
-        let values = match value {
-            CssValue::Keyword(raw) => raw
-                .split_whitespace()
-                .filter_map(parse_inset_component)
-                .collect::<Vec<_>>(),
-            CssValue::Length(_) | CssValue::Percentage(_) => vec![value],
-            _ => Vec::new(),
-        };
-        if !values.is_empty() {
-            let top = values[0].clone();
-            let right = values.get(1).cloned().unwrap_or_else(|| top.clone());
-            let bottom = values.get(2).cloned().unwrap_or_else(|| top.clone());
-            let left = values.get(3).cloned().unwrap_or_else(|| right.clone());
-            set_inset_side(style, "top", &top);
-            set_inset_side(style, "right", &right);
-            set_inset_side(style, "bottom", &bottom);
-            set_inset_side(style, "left", &left);
-        }
-    }
-
-    for (property, side) in [
-        ("top", "top"),
-        ("right", "right"),
-        ("bottom", "bottom"),
-        ("left", "left"),
-        ("inset-block-start", "top"),
-        ("inset-inline-end", "right"),
-        ("inset-block-end", "bottom"),
-        ("inset-inline-start", "left"),
-    ] {
-        if let Some(value) = authored_property_value(el, rules, ancestors, selector_ctx, property) {
-            set_inset_side(style, side, &value);
-        }
-    }
-}
-
-fn parse_inset_component(raw: &str) -> Option<CssValue> {
-    crate::parser::css::parse_length(raw)
-}
-
-fn set_inset_side(style: &mut ComputedStyle, side: &str, value: &CssValue) {
-    match (side, value) {
-        ("top", CssValue::Length(v)) => {
-            style.top = Some(*v);
-            style.percentage_insets.top = None;
-        }
-        ("right", CssValue::Length(v)) => {
-            style.right = Some(*v);
-            style.percentage_insets.right = None;
-        }
-        ("bottom", CssValue::Length(v)) => {
-            style.bottom = Some(*v);
-            style.percentage_insets.bottom = None;
-        }
-        ("left", CssValue::Length(v)) => {
-            style.left = Some(*v);
-            style.percentage_insets.left = None;
-        }
-        ("top", CssValue::Percentage(v)) => {
-            style.top = None;
-            style.percentage_insets.top = Some(*v);
-        }
-        ("right", CssValue::Percentage(v)) => {
-            style.right = None;
-            style.percentage_insets.right = Some(*v);
-        }
-        ("bottom", CssValue::Percentage(v)) => {
-            style.bottom = None;
-            style.percentage_insets.bottom = Some(*v);
-        }
-        ("left", CssValue::Percentage(v)) => {
-            style.left = None;
-            style.percentage_insets.left = Some(*v);
-        }
-        _ => {}
     }
 }
 
@@ -1412,7 +988,7 @@ pub(crate) fn build_pseudo_block(
             runs.push(TextRun {
                 font_size: used_font_size(pseudo_style, fonts),
                 color: pseudo_style.color,
-                font_family: marker_font.clone(),
+                font_family: marker_font,
                 line_height_factor: text_run_line_height_factor(pseudo_style, fonts),
                 inline_box: Some(Box::new(bullet)),
                 text_shadow: pseudo_style.text_shadow.clone(),

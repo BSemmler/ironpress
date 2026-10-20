@@ -42,22 +42,18 @@ impl InlineSiblingCursor {
     }
 
     pub(crate) fn next_context<'a>(
-        &mut self,
+        &'a mut self,
         element: &'a ElementNode,
-        ancestors: &[AncestorInfo<'a>],
+        ancestors: &'a [AncestorInfo<'a>],
     ) -> SelectorContext<'a> {
         let child_index = self.next_index;
         self.next_index = self.next_index.saturating_add(1);
         SelectorContext {
-            ancestors: ancestors.to_vec(),
+            ancestors,
             child_index,
             sibling_count: self.siblings.len(),
-            preceding_siblings: self
-                .siblings
-                .get(..child_index)
-                .unwrap_or_default()
-                .to_vec(),
-            following_siblings: forward_siblings(&self.siblings, child_index).to_vec(),
+            preceding_siblings: self.siblings.get(..child_index).unwrap_or_default(),
+            following_siblings: forward_siblings(&self.siblings, child_index),
             is_empty: element_is_empty(element),
         }
     }

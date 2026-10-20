@@ -4,7 +4,7 @@ pub(crate) use crate::parser::css::LengthPercent;
 use crate::parser::css::{
     BackgroundLayerSource, CssMathExpression, CssRule, CssValue, FontStretch, MathUnitContext,
     SelectorContext, SpecifiedColor, StyleMap, parse_length, parse_property_value,
-    selector_matches_with_context, specificity, split_radius_components,
+    split_radius_components,
 };
 use crate::parser::dom::HtmlTag;
 use crate::style::defaults::default_style;
@@ -4340,15 +4340,11 @@ fn compute_style_with_context_and_percentage_basis_impl(
         if rule.pseudo_element.is_some() {
             continue;
         }
-        if selector_matches_with_context(
-            &rule.selector,
-            tag_name,
-            classes,
-            id,
-            attributes,
-            selector_ctx,
-        ) {
-            matched.push((specificity(&rule.selector), rule));
+        if rule
+            .selector
+            .matches(tag_name, classes, id, attributes, selector_ctx)
+        {
+            matched.push((rule.selector.specificity(), rule));
         }
     }
     // Stable sort by specificity ascending; equal specificity keeps source order
@@ -4507,16 +4503,11 @@ pub(crate) fn compute_pseudo_element_style_with_font_metrics(
     let mut matched: Vec<(u32, &CssRule)> = Vec::new();
     for rule in rules {
         if rule.pseudo_element == Some(pseudo)
-            && selector_matches_with_context(
-                &rule.selector,
-                tag_name,
-                classes,
-                id,
-                attributes,
-                selector_ctx,
-            )
+            && rule
+                .selector
+                .matches(tag_name, classes, id, attributes, selector_ctx)
         {
-            matched.push((specificity(&rule.selector), rule));
+            matched.push((rule.selector.specificity(), rule));
         }
     }
 
@@ -4937,7 +4928,7 @@ fn reset_to_initial(style: &mut ComputedStyle, property: &str) {
         "widows" => style.widows = default.widows,
         "position" => {
             style.position = default.position;
-            style.running_name = default.running_name.clone();
+            style.running_name = default.running_name;
         }
         "top" => {
             style.top = default.top;
@@ -4963,7 +4954,7 @@ fn reset_to_initial(style: &mut ComputedStyle, property: &str) {
         "transform" => style.transform = default.transform,
         "perspective" => style.perspective = default.perspective,
         "transform-box" => style.transform_box = default.transform_box,
-        "box-shadow" => style.box_shadow = default.box_shadow.clone(),
+        "box-shadow" => style.box_shadow = default.box_shadow,
         "flex-direction" => style.flex_direction = default.flex_direction,
         "justify-content" => style.justify_content = default.justify_content,
         "align-items" => style.align_items = default.align_items,
@@ -5000,10 +4991,10 @@ fn reset_to_initial(style: &mut ComputedStyle, property: &str) {
         "object-position" => style.object_position = default.object_position,
         "image-rendering" => style.image_rendering = default.image_rendering,
         "background" => style.reset_background(),
-        "list-style-type" => style.list_style_type = default.list_style_type.clone(),
+        "list-style-type" => style.list_style_type = default.list_style_type,
         "list-style-position" => style.list_style_position = default.list_style_position,
         "marker-side" => style.marker_side_match_parent = default.marker_side_match_parent,
-        "list-style-image" => style.list_style_image = default.list_style_image.clone(),
+        "list-style-image" => style.list_style_image = default.list_style_image,
         "content" => style.content = default.content,
         "counter-reset" => style.counter_reset = default.counter_reset,
         "counter-increment" => style.counter_increment = default.counter_increment,
@@ -5024,7 +5015,7 @@ fn reset_to_initial(style: &mut ComputedStyle, property: &str) {
         "column-span" => style.column_span_all = default.column_span_all,
         "column-fill" => style.column_fill_auto = default.column_fill_auto,
         "filter" => {
-            style.filter = default.filter.clone();
+            style.filter = default.filter;
         }
         _ => {}
     }
@@ -19022,7 +19013,7 @@ mod tests {
         let mut map = StyleMap::new();
         map.set(prop, CssValue::Keyword(val.to_string()));
         CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: map,
             pseudo_element: None,
         }
@@ -21132,14 +21123,14 @@ mod tests {
     fn later_background_image_url_replaces_lower_gradient_atomically() {
         let parent = ComputedStyle::default();
         let lower = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 "background-image: linear-gradient(red, blue)",
             ),
             pseudo_element: None,
         };
         let higher = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 "background-image: url(higher.png)",
             ),
@@ -21163,14 +21154,14 @@ mod tests {
     fn later_background_image_gradient_replaces_lower_url_atomically() {
         let parent = ComputedStyle::default();
         let lower = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 "background-image: url(lower.png)",
             ),
             pseudo_element: None,
         };
         let higher = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 "background-image: linear-gradient(red, blue)",
             ),
@@ -21194,14 +21185,14 @@ mod tests {
     fn normal_background_image_cannot_replace_lower_important_image_list() {
         let parent = ComputedStyle::default();
         let lower = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 "background-image: linear-gradient(red, blue) !important",
             ),
             pseudo_element: None,
         };
         let higher = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 "background-image: url(normal.png)",
             ),
@@ -21274,14 +21265,14 @@ mod tests {
     fn background_shorthand_resets_omitted_longhands_from_previous_rule() {
         let parent = ComputedStyle::default();
         let prior_rule = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 "background-repeat: no-repeat; background-position: center; background-origin: content-box; background-size: cover; background-color: red",
             ),
             pseudo_element: None,
         };
         let later_rule = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 r#"background: url("data:image/png;base64,AAAA")"#,
             ),
@@ -21308,14 +21299,14 @@ mod tests {
     fn later_background_initial_rule_resets_previous_background_state() {
         let parent = ComputedStyle::default();
         let prior_rule = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 r#"background: url("data:image/png;base64,AAAA") no-repeat center / cover content-box"#,
             ),
             pseudo_element: None,
         };
         let later_rule = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style("background: initial"),
             pseudo_element: None,
         };
@@ -21357,14 +21348,14 @@ mod tests {
         );
 
         let prior_rule = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style(
                 r#"background: url("data:image/png;base64,AAAA") no-repeat center / cover content-box"#,
             ),
             pseudo_element: None,
         };
         let later_rule = CssRule {
-            selector: "div".to_string(),
+            selector: "div".into(),
             declarations: crate::parser::css::parse_inline_style("background: inherit"),
             pseudo_element: None,
         };
@@ -23068,7 +23059,7 @@ mod tests {
     fn pseudo_element_style_inherits_color() {
         use crate::parser::css::{PseudoElement, parse_stylesheet};
         let parent = ComputedStyle::default();
-        let mut parent_with_color = parent.clone();
+        let mut parent_with_color = parent;
         parent_with_color.color = Color::rgb(255, 0, 0);
         let rules = parse_stylesheet(".box::before { content: 'X'; }");
         let ctx = SelectorContext::default();

@@ -3,10 +3,7 @@
 use crate::layout::context::LayoutEnv;
 use crate::layout::elements::{Container, LayoutElement, LayoutNode, LayoutVisitor, TextBlock};
 use crate::layout::paginate::estimate_element_height;
-use crate::parser::css::{
-    AncestorInfo, CssValue, SelectorContext, parse_inline_style, selector_matches_with_context,
-    specificity,
-};
+use crate::parser::css::{AncestorInfo, CssValue, SelectorContext, parse_inline_style};
 use crate::parser::dom::ElementNode;
 use crate::style::computed::ComputedStyle;
 
@@ -220,11 +217,11 @@ pub(super) fn child_multicol_info(
     use crate::style::computed::compute_style_with_context;
     let classes = child_el.class_list();
     let selector_ctx = SelectorContext {
-        ancestors: child_ancestors.to_vec(),
+        ancestors: child_ancestors,
         child_index,
         sibling_count,
-        preceding_siblings: preceding_siblings.to_vec(),
-        following_siblings: Vec::new(),
+        preceding_siblings,
+        following_siblings: &[],
         is_empty: false,
     };
     let cs = compute_style_with_context(
@@ -264,15 +261,11 @@ fn resolve_child_column_breaks(
         if rule.pseudo_element.is_some() {
             continue;
         }
-        if selector_matches_with_context(
-            &rule.selector,
-            tag_name,
-            classes,
-            id,
-            attributes,
-            selector_ctx,
-        ) {
-            matched.push((specificity(&rule.selector), rule));
+        if rule
+            .selector
+            .matches(tag_name, classes, id, attributes, selector_ctx)
+        {
+            matched.push((rule.selector.specificity(), rule));
         }
     }
     matched.sort_by_key(|(spec, _)| *spec);

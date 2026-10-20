@@ -158,8 +158,8 @@ pub(crate) fn layout_multicol_container(
         element: el,
         child_index: 0,
         sibling_count: 0,
-        preceding_siblings: Vec::new(),
-        following_siblings: Vec::new(),
+        preceding_siblings: &[],
+        following_siblings: &[],
         is_empty: false,
     });
 
@@ -171,7 +171,7 @@ pub(crate) fn layout_multicol_container(
 
     let mut items: Vec<MultiColItem> = Vec::new();
     let container_selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
+        ancestors,
         ..Default::default()
     };
     let generated_styles =

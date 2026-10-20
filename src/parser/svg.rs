@@ -5796,7 +5796,7 @@ mod tests {
             font_italic: false,
             color: Some(Color::rgb(255, 0, 0)),
         };
-        let tree = parse_svg_from_element_with_ctx(&svg, ctx.clone()).unwrap();
+        let tree = parse_svg_from_element_with_ctx(&svg, ctx).unwrap();
         assert_eq!(tree.text_ctx.font_family, "Courier");
         assert_eq!(tree.text_ctx.font_size, 14.0);
         assert!(tree.text_ctx.font_bold);

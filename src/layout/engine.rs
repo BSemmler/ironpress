@@ -23,6 +23,7 @@ use crate::style::computed::{BorderCollapse, Clear, Float, Position};
 #[cfg(test)]
 use crate::types::Color;
 
+use super::authored::AuthoredCascade;
 use super::block::layout_block_element;
 #[cfg(test)]
 use super::cells::CellBoxHolder;
@@ -2308,13 +2309,8 @@ fn collect_plain_text(nodes: &[DomNode], out: &mut String) {
     }
 }
 
-fn string_set_marker(
-    el: &ElementNode,
-    rules: &[CssRule],
-    ancestors: &[AncestorInfo],
-    selector_ctx: &SelectorContext,
-) -> Option<LayoutNode> {
-    let raw = match authored_property_value(el, rules, ancestors, selector_ctx, "string-set")? {
+fn string_set_marker(el: &ElementNode, authored: &AuthoredCascade) -> Option<LayoutNode> {
+    let raw = match authored.value("string-set")? {
         crate::parser::css::CssValue::Keyword(value) => value,
         _ => return None,
     };
@@ -2686,11 +2682,11 @@ fn direct_flex_item_filters(
     for (idx, child_el) in child_elements.into_iter().enumerate() {
         let classes = child_el.class_list();
         let selector_ctx = SelectorContext {
-            ancestors: ancestors.to_vec(),
+            ancestors,
             child_index: idx,
             sibling_count: child_count,
-            preceding_siblings: Vec::new(),
-            following_siblings: Vec::new(),
+            preceding_siblings: &[],
+            following_siblings: &[],
             is_empty: false,
         };
         let mut child_style = compute_style_with_context_with_font_metrics(
@@ -3291,12 +3287,11 @@ pub(crate) fn flatten_nodes(
             DomNode::Element(el) => {
                 let classes = el.class_list();
                 let selector_ctx = SelectorContext {
-                    ancestors: ancestors.to_vec(),
+                    ancestors,
                     child_index: element_index,
                     sibling_count: element_count,
-                    preceding_siblings: preceding_siblings.to_vec(),
-                    following_siblings: forward_siblings(&all_element_siblings, element_index)
-                        .to_vec(),
+                    preceding_siblings: &preceding_siblings,
+                    following_siblings: forward_siblings(&all_element_siblings, element_index),
                     is_empty: element_is_empty(el),
                 };
                 let style = compute_style_with_context_with_font_metrics(
@@ -3311,7 +3306,8 @@ pub(crate) fn flatten_nodes(
                     &selector_ctx,
                     env.font_metrics(),
                 );
-                if let Some(marker) = string_set_marker(el, env.rules, ancestors, &selector_ctx) {
+                let authored = AuthoredCascade::new(el, env.rules, &selector_ctx);
+                if let Some(marker) = string_set_marker(el, &authored) {
                     output.push(marker);
                 }
                 if let Some(marker) = target_anchor_marker(el) {
@@ -3497,11 +3493,11 @@ fn flatten_element_with_running_mode(
     let available_height = ctx.available_height();
     let classes = el.class_list();
     let selector_ctx = SelectorContext {
-        ancestors: ancestors.to_vec(),
+        ancestors,
         child_index,
         sibling_count,
-        preceding_siblings: preceding_siblings.to_vec(),
-        following_siblings: following_siblings.to_vec(),
+        preceding_siblings,
+        following_siblings,
         is_empty: element_is_empty(el),
     };
     let selector_attrs = selector_attributes_with_has(el);
@@ -3522,9 +3518,9 @@ fn flatten_element_with_running_mode(
         ),
         env.font_metrics(),
     );
-    let authored_display_contents =
-        authored_display_contents(el, env.rules, ancestors, &selector_ctx);
-    apply_authored_insets(&mut style, el, env.rules, ancestors, &selector_ctx);
+    let authored = AuthoredCascade::new(el, env.rules, &selector_ctx);
+    let authored_display_contents = authored.display_contents();
+    authored.apply_insets(&mut style);
     style.transform = effective_transform(&style, parent_style, ctx);
     // Resolve `filter: url(#id)` (css-filter-effects-1 §3): look up the inline
     // SVG `<filter>` element by id and translate its `feColorMatrix` primitives
@@ -3578,7 +3574,7 @@ fn flatten_element_with_running_mode(
             output.push(marker);
         }
         emit_page_break_before(&style, output);
-        if let Some(marker) = string_set_marker(el, env.rules, ancestors, &selector_ctx) {
+        if let Some(marker) = string_set_marker(el, &authored) {
             output.push(marker);
         }
         element_output_start = output.len();
@@ -3990,8 +3986,8 @@ fn flatten_element_with_running_mode(
             element: el,
             child_index,
             sibling_count,
-            preceding_siblings: Vec::new(),
-            following_siblings: Vec::new(),
+            preceding_siblings: &[],
+            following_siblings: &[],
             is_empty: false,
         });
 
@@ -4163,11 +4159,11 @@ fn flatten_element_with_running_mode(
             let class_list = el.class_list();
             let classes: Vec<&str> = class_list.iter().map(|s| s.as_ref()).collect();
             let li_selector_ctx = SelectorContext {
-                ancestors: ancestors.to_vec(),
+                ancestors,
                 child_index,
                 sibling_count,
-                preceding_siblings: preceding_siblings.to_vec(),
-                following_siblings: Vec::new(),
+                preceding_siblings,
+                following_siblings: &[],
                 is_empty: false,
             };
             let generated_styles =
@@ -4389,7 +4385,7 @@ fn flatten_element_with_running_mode(
                     runs.push(TextRun {
                         font_size: used_font_size(marker_style, env.fonts),
                         color: marker_style.color,
-                        font_family: marker_font_family.clone(),
+                        font_family: marker_font_family,
                         line_height_factor: marker_line_height_factor,
                         inline_box: Some(Box::new(bullet)),
                         text_shadow: marker_style.text_shadow.clone(),
@@ -4731,11 +4727,11 @@ fn inline_loose_list_p(
             if child_el.tag == HtmlTag::P {
                 let p_cls: Vec<&str> = child_el.class_list();
                 let p_selector_ctx = SelectorContext {
-                    ancestors: child_ancestors.to_vec(),
+                    ancestors: child_ancestors,
                     child_index: child_el_ordinal,
                     sibling_count: li_child_el_count,
-                    preceding_siblings: Vec::new(),
-                    following_siblings: Vec::new(),
+                    preceding_siblings: &[],
+                    following_siblings: &[],
                     is_empty: false,
                 };
                 let p_style = compute_style_with_context_with_font_metrics(
@@ -4968,14 +4964,14 @@ fn flex_element_with_display_contents_children(
         match child {
             DomNode::Element(child_el) => {
                 let selector_ctx = SelectorContext {
-                    ancestors: ancestors.to_vec(),
+                    ancestors,
                     child_index: element_index,
                     sibling_count: element_count,
-                    preceding_siblings: preceding_siblings.clone(),
-                    following_siblings: forward_siblings(&sibling_list, element_index).to_vec(),
+                    preceding_siblings: &preceding_siblings,
+                    following_siblings: forward_siblings(&sibling_list, element_index),
                     is_empty: element_is_empty(child_el),
                 };
-                if authored_display_contents(child_el, env.rules, ancestors, &selector_ctx) {
+                if AuthoredCascade::new(child_el, env.rules, &selector_ctx).display_contents() {
                     changed = true;
                     children.extend(child_el.children.iter().cloned());
                 } else {

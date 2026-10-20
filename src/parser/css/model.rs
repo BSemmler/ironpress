@@ -1,4 +1,5 @@
 use super::page_descriptors::PageSheetDescriptors;
+use super::selectors::Selector;
 use crate::parser::dom::ElementNode;
 use crate::types::{Color, EdgeSizes};
 use std::collections::HashMap;
@@ -14,8 +15,15 @@ pub struct MediaContext {
     pub height: f32,
 }
 
+/// One sibling element as selector matching sees it: its tag name and class
+/// list. Sibling combinators and structural pseudo-classes need nothing else.
+pub(crate) type SiblingSummary = (String, Vec<String>);
+
 /// Per-ancestor context for nth-child matching in descendant selectors.
-#[derive(Debug, Clone)]
+///
+/// Sibling lists are borrowed from the parent's single sibling summary, so
+/// descending into a subtree or walking ancestors never copies them.
+#[derive(Debug, Clone, Copy)]
 pub struct AncestorInfo<'a> {
     /// The ancestor element.
     pub element: &'a ElementNode,
@@ -24,29 +32,32 @@ pub struct AncestorInfo<'a> {
     /// Total number of children in this ancestor's parent.
     pub sibling_count: usize,
     /// Preceding sibling elements for this ancestor within its parent.
-    pub preceding_siblings: Vec<(String, Vec<String>)>,
+    pub preceding_siblings: &'a [SiblingSummary],
     /// Following sibling elements for this ancestor within its parent.
-    pub following_siblings: Vec<(String, Vec<String>)>,
+    pub following_siblings: &'a [SiblingSummary],
     /// Whether this ancestor has no element children / non-whitespace text.
     pub is_empty: bool,
 }
 
 /// Context for advanced CSS selector matching.
-#[derive(Debug, Clone, Default)]
+///
+/// Every list is a borrowed view, so a context is `Copy` and moving to an
+/// ancestor or sibling during combinator matching is a re-slice.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SelectorContext<'a> {
     /// Ancestor elements from root to direct parent (outermost first).
-    pub ancestors: Vec<AncestorInfo<'a>>,
+    pub ancestors: &'a [AncestorInfo<'a>],
     /// Zero-based index of this element among its parent's element children.
     pub child_index: usize,
     /// Total number of element children in the parent.
     pub sibling_count: usize,
     /// Preceding sibling elements (tag name, class list) in document order.
-    pub preceding_siblings: Vec<(String, Vec<String>)>,
+    pub preceding_siblings: &'a [SiblingSummary],
     /// Following sibling elements (tag name, class list) in document order.
     /// Needed for `:last-of-type`, `:only-of-type`, `:nth-last-of-type`, and
     /// `:has(~ ...)`/`:has(+ ...)` relational matching. Defaults to empty in
     /// layout paths that don't track forward siblings.
-    pub following_siblings: Vec<(String, Vec<String>)>,
+    pub following_siblings: &'a [SiblingSummary],
     /// Whether this element has no element children and no non-whitespace text
     /// (drives `:empty`). Defaults to `false` where not tracked.
     pub is_empty: bool,
@@ -62,8 +73,8 @@ impl<'a> SelectorContext<'a> {
             element,
             child_index: self.child_index,
             sibling_count: self.sibling_count,
-            preceding_siblings: self.preceding_siblings.clone(),
-            following_siblings: self.following_siblings.clone(),
+            preceding_siblings: self.preceding_siblings,
+            following_siblings: self.following_siblings,
             is_empty: self.is_empty,
         }
     }
@@ -289,7 +300,7 @@ pub enum PseudoElement {
 /// A CSS rule: a selector and its declarations.
 #[derive(Debug, Clone)]
 pub struct CssRule {
-    pub selector: String,
+    pub selector: Selector,
     pub declarations: StyleMap,
     /// If this rule targets a `::before` or `::after` pseudo-element.
     pub pseudo_element: Option<PseudoElement>,
