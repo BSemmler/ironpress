@@ -720,6 +720,7 @@ pub(crate) fn render_pdf_to_writer_full_opts_with_resources<W: std::io::Write>(
                                 &mut decoration_content,
                                 element.as_ref(),
                                 mb.position.align(),
+                                mb.vertical_align,
                                 band,
                                 page_size,
                                 page_margin,
@@ -791,7 +792,15 @@ pub(crate) fn render_pdf_to_writer_full_opts_with_resources<W: std::io::Write>(
                 );
                 let text_y = band.map_or_else(
                     || y - (line_box.baseline_from_top - line_box.height / 2.0),
-                    |band| page_margin_text_baseline(band, page_size, page_margin, line_box),
+                    |band| {
+                        page_margin_text_baseline(
+                            band,
+                            mb.vertical_align,
+                            page_size,
+                            page_margin,
+                            line_box,
+                        )
+                    },
                 );
                 let text_x =
                     crate::layout::units::LayoutUnit::from_points_floor(margin_layout.text_x)

@@ -303,6 +303,7 @@ impl PageMarginLineBox {
 /// page edge, as required by the page-margin box's table-cell alignment.
 pub(super) fn page_margin_text_baseline(
     band: crate::parser::css::MarginBoxBand,
+    vertical_align: crate::parser::css::MarginBoxVerticalAlign,
     page_size: PageSize,
     margin: Margin,
     line_box: PageMarginLineBox,
@@ -311,7 +312,7 @@ pub(super) fn page_margin_text_baseline(
         crate::parser::css::MarginBoxBand::Top => (margin.top, true),
         crate::parser::css::MarginBoxBand::Bottom => (margin.bottom, false),
     };
-    let surplus = (margin_extent - line_box.height) / 2.0;
+    let surplus = vertical_align.surplus_above(margin_extent - line_box.height);
     let baseline_from_band_top = line_box.baseline_from_top + surplus;
 
     if from_page_top {
@@ -330,6 +331,7 @@ mod page_margin_text_tests {
         let margin = Margin::new(15.0, 0.0, 0.0, 0.0);
         let baseline = page_margin_text_baseline(
             crate::parser::css::MarginBoxBand::Top,
+            crate::parser::css::MarginBoxVerticalAlign::Middle,
             PageSize::new(120.0, 78.0),
             margin,
             PageMarginLineBox {
@@ -342,10 +344,41 @@ mod page_margin_text_tests {
     }
 
     #[test]
+    fn vertical_align_places_the_line_at_the_band_edges() {
+        use crate::parser::css::{MarginBoxBand, MarginBoxVerticalAlign};
+        let page = PageSize::new(150.0, 100.0);
+        let line_box = PageMarginLineBox {
+            baseline_from_top: 15.0,
+            height: 20.0,
+        };
+        let margin = Margin::new(30.0, 0.0, 30.0, 0.0);
+        let baseline = |band, align| page_margin_text_baseline(band, align, page, margin, line_box);
+        // Top band: the line's top at the page top, or its bottom at the band's
+        assert_eq!(
+            baseline(MarginBoxBand::Top, MarginBoxVerticalAlign::Top),
+            85.0
+        );
+        assert_eq!(
+            baseline(MarginBoxBand::Top, MarginBoxVerticalAlign::Bottom),
+            75.0
+        );
+        // Bottom band: measured up from the page bottom
+        assert_eq!(
+            baseline(MarginBoxBand::Bottom, MarginBoxVerticalAlign::Top),
+            15.0
+        );
+        assert_eq!(
+            baseline(MarginBoxBand::Bottom, MarginBoxVerticalAlign::Bottom),
+            5.0
+        );
+    }
+
+    #[test]
     fn fitting_line_centers_its_auto_height_box_without_rounding() {
         let margin = Margin::new(21.0, 0.0, 0.0, 0.0);
         let baseline = page_margin_text_baseline(
             crate::parser::css::MarginBoxBand::Top,
+            crate::parser::css::MarginBoxVerticalAlign::Middle,
             PageSize::new(150.0, 108.0),
             margin,
             PageMarginLineBox {
@@ -425,6 +458,47 @@ mod page_margin_text_tests {
             !syntax.contains("/ironpresssyntheticweightfixture "),
             "running text must not reference the unregistered source resource"
         );
+    }
+
+    #[test]
+    fn running_element_honours_the_margin_box_vertical_align() {
+        // The y of the red running box's bottom edge, in PDF points from the page bottom
+        let red_box_y = |align: &str| -> f32 {
+            let pdf = crate::HtmlConverter::new()
+                .compress(false)
+                .convert(&format!(
+                    r#"<html><head><style>
+                        @page {{ size: 200pt 200pt; margin: 80pt 0 0;
+                            @top-center {{ content: element(header); {align} }} }}
+                        .header {{ position: running(header); width: 50pt; height: 20pt; background: #ff0000 }}
+                    </style></head><body><div class="header"></div><p>body</p></body></html>"#
+                ))
+                .expect("running-element PDF");
+            let syntax = String::from_utf8_lossy(&pdf);
+            let after_red = syntax
+                .split("1 0 0 rg")
+                .nth(1)
+                .expect("the red box is painted");
+            let rect = after_red
+                .lines()
+                .find(|line| line.ends_with(" re f") || line.ends_with(" re"))
+                .unwrap();
+            rect.split_whitespace().nth(1).unwrap().parse().unwrap()
+        };
+        // Top inset 30pt (centred in the 80pt band) by default, 0 at the top, 60 at the
+        // bottom. The painted box is snapped outwards by a fraction of a point.
+        for (align, expected) in [
+            ("", 150.0),
+            ("vertical-align: middle", 150.0),
+            ("vertical-align: top", 180.0),
+            ("vertical-align: bottom", 120.0),
+        ] {
+            let y = red_box_y(align);
+            assert!(
+                (y - expected).abs() <= 0.5,
+                "{align:?}: y = {y}, expected {expected}"
+            );
+        }
     }
 
     #[test]
@@ -578,6 +652,7 @@ pub(super) fn render_running_margin_element(
     content: &mut String,
     element: &dyn LayoutElement,
     align: crate::parser::css::MarginBoxAlign,
+    vertical_align: crate::parser::css::MarginBoxVerticalAlign,
     band: crate::parser::css::MarginBoxBand,
     page_size: PageSize,
     margin: Margin,
@@ -588,6 +663,7 @@ pub(super) fn render_running_margin_element(
     struct Renderer<'call, 'page> {
         content: &'call mut String,
         align: crate::parser::css::MarginBoxAlign,
+        vertical_align: crate::parser::css::MarginBoxVerticalAlign,
         band: crate::parser::css::MarginBoxBand,
         page_size: PageSize,
         margin: Margin,
@@ -632,13 +708,17 @@ pub(super) fn render_running_margin_element(
                     self.page_size.width - self.margin.right - width
                 }
             };
-            let band_center_y = match self.band {
-                crate::parser::css::MarginBoxBand::Top => {
-                    self.page_size.height - self.margin.top / 2.0
-                }
-                crate::parser::css::MarginBoxBand::Bottom => self.margin.bottom / 2.0,
+            // The band's top as an inset from the page top, then the
+            // element's place in the band's spare height
+            let (band_top_inset, band_extent) = match self.band {
+                crate::parser::css::MarginBoxBand::Top => (0.0, self.margin.top),
+                crate::parser::css::MarginBoxBand::Bottom => (
+                    self.page_size.height - self.margin.bottom,
+                    self.margin.bottom,
+                ),
             };
-            let top_inset = self.page_size.height - band_center_y - height / 2.0;
+            let top_inset =
+                band_top_inset + self.vertical_align.surplus_above(band_extent - height);
             let frame = PageElementFrame {
                 occlusion_coverers: &[],
                 page_size: self.page_size,
@@ -722,6 +802,7 @@ pub(super) fn render_running_margin_element(
     let mut renderer = Renderer {
         content,
         align,
+        vertical_align,
         band,
         page_size,
         margin,

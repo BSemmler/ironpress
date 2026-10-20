@@ -720,6 +720,36 @@ pub enum MarginBoxBand {
     Bottom,
 }
 
+/// Vertical alignment of a margin box's content within its band
+/// (CSS Paged Media 3 §5.3.2). Top and bottom boxes default to `middle`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MarginBoxVerticalAlign {
+    Top,
+    #[default]
+    Middle,
+    Bottom,
+}
+
+impl MarginBoxVerticalAlign {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "top" => Some(Self::Top),
+            "middle" => Some(Self::Middle),
+            "bottom" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+
+    /// The share of the band's spare height that goes above the content
+    pub(crate) fn surplus_above(self, surplus: f32) -> f32 {
+        match self {
+            Self::Top => 0.0,
+            Self::Middle => surplus / 2.0,
+            Self::Bottom => surplus,
+        }
+    }
+}
+
 /// Horizontal alignment of a margin box within its band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarginBoxAlign {
@@ -879,6 +909,9 @@ pub struct MarginBox {
     /// The used inline size when `width` is explicitly declared, in points.
     /// `None` retains the Page 3 automatic margin-box dimension algorithm.
     pub width: Option<f32>,
+    /// `vertical-align` within the margin band: the content's place in the
+    /// band's height when the margin is taller or shorter than the content.
+    pub vertical_align: MarginBoxVerticalAlign,
     /// The `content` value parsed into a token list (literals + counters).
     pub content: Vec<MarginContentToken>,
 }

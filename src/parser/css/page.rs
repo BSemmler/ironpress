@@ -1,6 +1,7 @@
 use super::{
-    CssValue, FontFaceRule, MarginBox, MarginBoxPosition, MarginContentToken, PageContentReference,
-    PageRule, PageSelector, PageTextStyle, SpecifiedColor, extract_url_path,
+    CssValue, FontFaceRule, MarginBox, MarginBoxPosition, MarginBoxVerticalAlign,
+    MarginContentToken, PageContentReference, PageRule, PageSelector, PageTextStyle,
+    SpecifiedColor, extract_url_path,
     model::{FontFaceSource, FontStretch, FootnoteAreaStyle, PageCounterControl, UnicodeRange},
     preprocess_media_queries,
 };
@@ -502,7 +503,7 @@ pub(crate) fn split_page_at_rules(
             break;
         };
         if let Some(position) = MarginBoxPosition::from_at_name(name) {
-            if let Some((content, color, background_color, text_style, width)) =
+            if let Some((content, color, background_color, text_style, width, vertical_align)) =
                 extract_margin_box_decls(&body_region[..close])
             {
                 boxes.push(MarginBox {
@@ -513,6 +514,7 @@ pub(crate) fn split_page_at_rules(
                     background_color,
                     text_style,
                     width,
+                    vertical_align,
                     content,
                 });
             }
@@ -540,6 +542,7 @@ type ParsedMarginBoxDecls = (
     Option<crate::types::Color>,
     PageTextStyle,
     Option<f32>,
+    MarginBoxVerticalAlign,
 );
 
 /// Keeps a decoded string paired with its source width so the surrounding
@@ -568,6 +571,7 @@ fn extract_margin_box_decls(body: &str) -> Option<ParsedMarginBoxDecls> {
     let mut specified_color: Option<SpecifiedColor> = None;
     let mut specified_background_color: Option<SpecifiedColor> = None;
     let mut width = None;
+    let mut vertical_align = MarginBoxVerticalAlign::default();
     for decl in body.split(';') {
         if let Some((prop, val)) = decl.split_once(':') {
             let prop = prop.trim();
@@ -586,6 +590,11 @@ fn extract_margin_box_decls(body: &str) -> Option<ParsedMarginBoxDecls> {
                 }
             } else if prop.eq_ignore_ascii_case("width") {
                 width = parse_nonnegative_page_length(val);
+            } else if prop.eq_ignore_ascii_case("vertical-align") {
+                // An unsupported value is invalid and leaves the earlier one
+                if let Some(value) = MarginBoxVerticalAlign::parse(val) {
+                    vertical_align = value;
+                }
             }
         }
     }
@@ -607,6 +616,7 @@ fn extract_margin_box_decls(body: &str) -> Option<ParsedMarginBoxDecls> {
                 declarations: super::parse_inline_style(body),
             },
             width,
+            vertical_align,
         )
     })
 }
@@ -1345,6 +1355,26 @@ mod tests {
         let expected = crate::types::Color::rgb(20, 40, 60);
         assert_eq!(margin_box.color, Some(expected));
         assert_eq!(margin_box.background_color, Some(expected));
+    }
+
+    #[test]
+    fn margin_box_vertical_align_defaults_to_middle_and_ignores_invalid_values() {
+        let rules = extract_page_rules(
+            r#"@page { @top-center { content: "x"; vertical-align: Bottom } @top-left { content: "x" } @bottom-center { content: "x"; vertical-align: top; vertical-align: baseline } }"#,
+        );
+        let aligns: Vec<_> = rules[0]
+            .margin_boxes
+            .iter()
+            .map(|b| b.vertical_align)
+            .collect();
+        assert_eq!(
+            aligns,
+            [
+                MarginBoxVerticalAlign::Bottom,
+                MarginBoxVerticalAlign::Middle,
+                MarginBoxVerticalAlign::Top,
+            ]
+        );
     }
 
     #[test]

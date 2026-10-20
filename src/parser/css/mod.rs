@@ -21,9 +21,10 @@ pub(crate) use math::{CssMathExpression, LengthPercent, MathUnitContext, Pending
 pub(crate) use media::{preprocess_media_queries, preprocess_media_queries_with_context};
 pub use model::{
     AncestorInfo, BackgroundLayerSource, CssRule, CssValue, FontFaceRule, FontStretch, ImportRule,
-    MarginBox, MarginBoxAlign, MarginBoxBand, MarginBoxPosition, MarginContentToken, MediaContext,
-    PageContentPolicy, PageContentReference, PageRule, PageSelector, PageSelectorContext,
-    PageTextStyle, PseudoElement, SelectorContext, SpecifiedColor, StyleMap,
+    MarginBox, MarginBoxAlign, MarginBoxBand, MarginBoxPosition, MarginBoxVerticalAlign,
+    MarginContentToken, MediaContext, PageContentPolicy, PageContentReference, PageRule,
+    PageSelector, PageSelectorContext, PageTextStyle, PseudoElement, SelectorContext,
+    SpecifiedColor, StyleMap,
 };
 #[cfg(test)]
 #[allow(unused_imports)]
