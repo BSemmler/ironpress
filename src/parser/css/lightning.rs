@@ -78,10 +78,7 @@ struct AuthoredDeclaration {
 fn parse_authored_declarations(input: &str) -> Vec<AuthoredDeclaration> {
     let mut declarations = Vec::new();
     let mut start = 0usize;
-    for end in top_level_delimiters(input, b';')
-        .into_iter()
-        .chain(std::iter::once(input.len()))
-    {
+    for end in top_level_delimiters(input, b';').chain(std::iter::once(input.len())) {
         let declaration = input[start..end].trim();
         start = end.saturating_add(1);
         let Some(colon) = first_top_level_delimiter(declaration, b':') else {
@@ -492,7 +489,7 @@ fn push_sanitized_declaration(output: &mut String, declaration: &str) {
     // enough to retain a validated cascade slot; the full authored shorthand
     // is restored below and parsed by Ironpress' border-image model.
     if property == "border-image"
-        && top_level_delimiters(value, b'/').len() >= 2
+        && top_level_delimiters(value, b'/').nth(1).is_some()
         && let Some((source, slices, _, _, _)) = split_border_image_shorthand(value)
     {
         output.push_str(&declaration[..=colon]);
@@ -726,26 +723,48 @@ fn matching_brace(input: &str, open: usize) -> Option<usize> {
     None
 }
 
-fn top_level_delimiters(input: &str, delimiter: u8) -> Vec<usize> {
-    let bytes = input.as_bytes();
-    let mut state = LexState::default();
-    let mut indices = Vec::new();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if state.advance(bytes, &mut index) {
-            continue;
-        }
-        if bytes[index] == delimiter && state.at_top_level() {
-            indices.push(index);
-        }
-        state.update_depth(bytes[index]);
-        index += 1;
+fn top_level_delimiters(input: &str, delimiter: u8) -> TopLevelDelimiters<'_> {
+    TopLevelDelimiters {
+        bytes: input.as_bytes(),
+        delimiter,
+        state: LexState::default(),
+        index: 0,
     }
-    indices
 }
 
 fn first_top_level_delimiter(input: &str, delimiter: u8) -> Option<usize> {
-    top_level_delimiters(input, delimiter).into_iter().next()
+    top_level_delimiters(input, delimiter).next()
+}
+
+/// Byte offsets of `delimiter` outside comments, strings, escapes, and
+/// parentheses or brackets, found lazily so a caller that needs only the first
+/// one does not scan the rest of the input.
+struct TopLevelDelimiters<'a> {
+    bytes: &'a [u8],
+    delimiter: u8,
+    state: LexState,
+    index: usize,
+}
+
+impl Iterator for TopLevelDelimiters<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        while self.index < self.bytes.len() {
+            if self.state.advance(self.bytes, &mut self.index) {
+                continue;
+            }
+            let index = self.index;
+            let byte = self.bytes[index];
+            let found = byte == self.delimiter && self.state.at_top_level();
+            self.state.update_depth(byte);
+            self.index += 1;
+            if found {
+                return Some(index);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Default)]
