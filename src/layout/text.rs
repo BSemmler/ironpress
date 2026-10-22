@@ -1702,21 +1702,11 @@ fn should_break_as_char_tokens(word: &str, keep_all: bool) -> bool {
     if word.chars().count() <= 1 {
         return false;
     }
-    let has_cjk = word.chars().any(is_cjk_char);
-    if has_cjk {
-        return !keep_all;
-    }
-    // `line-break:anywhere` is not represented in ComputedStyle yet, but CSS
-    // Text's anywhere behavior is needed for punctuation-heavy unspaced runs.
-    // Restrict arbitrary Latin breaks to runs that carry visible punctuation so
-    // ordinary prose words still keep their normal unbreakable min-content.
-    if word
-        .chars()
-        .any(|ch| matches!(ch, '/' | '+' | '(' | ')' | '[' | ']' | '{' | '}'))
-    {
-        return true;
-    }
-    false
+    // Latin words keep their UAX #14 opportunities, even beside punctuation:
+    // `(the` and `period).` hold no break. Breaking anywhere is opted into
+    // with `line-break: anywhere` or `word-break: break-all`, which set
+    // `OverflowWrap::Anywhere`.
+    word.chars().any(is_cjk_char) && !keep_all
 }
 
 fn push_char_break_tokens(word: &str, run_index: usize, out: &mut Vec<StyledWord>) {
@@ -4885,7 +4875,8 @@ mod indent_tests {
         let fonts = parity_sans_fonts();
         let run = parity_run("verification/path");
         let prefix_width = estimate_text_width_for_run("verification", &run, &fonts);
-        let options = TextWrapOptions::new(prefix_width, 16.0, 1.2, OverflowWrap::Normal);
+        // Breaking before `/` needs `anywhere`: UAX #14 LB13 holds no break there.
+        let options = TextWrapOptions::new(prefix_width, 16.0, 1.2, OverflowWrap::Anywhere);
 
         let lines = wrap_text_runs(vec![run], options, &fonts);
 
@@ -5153,6 +5144,48 @@ mod indent_tests {
     fn word_break_keep_all_keeps_cjk_punctuation_runs_whole() {
         assert!(should_break_as_char_tokens("你好/世界", false));
         assert!(!should_break_as_char_tokens("你好/世界", true));
+    }
+
+    #[test]
+    fn latin_words_beside_brackets_and_slashes_stay_whole() {
+        // UAX #14 holds no break after an opening bracket (LB14) or before a
+        // closing one (LB13), and `normal` line breaking adds none inside a word.
+        for word in [
+            "(the",
+            "period).",
+            "extension),",
+            "4(b)",
+            "and/or",
+            "C++",
+            "[draft]",
+            "{x}",
+        ] {
+            assert!(!should_break_as_char_tokens(word, false), "{word}");
+        }
+    }
+
+    #[test]
+    fn prose_with_parentheses_breaks_only_between_words() {
+        // CSS Text 3 §5.1 with `line-break: normal`: in Latin prose the only soft
+        // wrap opportunities are the spaces, so every line holds whole words.
+        let text = "Employees are on probation for the first ninety days (the probation \
+            period). During that period (and any extension), either party may end \
+            employment. See section 4(b) and contact HR (hr@example.com) with questions.";
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let fonts = parity_sans_fonts();
+        for width in (80..=400).step_by(9) {
+            let options = TextWrapOptions::new(width as f32, 16.0, 1.2, OverflowWrap::Normal);
+            let lines = wrap_text_runs(vec![parity_run(text)], options, &fonts);
+            let wrapped: Vec<String> = lines.iter().map(line_text).collect();
+            let rejoined: Vec<&str> = wrapped
+                .iter()
+                .flat_map(|line| line.split_whitespace())
+                .collect();
+            assert_eq!(
+                rejoined, words,
+                "a word was split at width {width}: {wrapped:?}"
+            );
+        }
     }
 
     /// Concatenate a line's runs back into its rendered text.

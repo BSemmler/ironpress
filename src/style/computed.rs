@@ -7590,6 +7590,15 @@ fn apply_style_map_with_percentage_basis(
             style.overflow_wrap = OverflowWrap::Anywhere;
         }
     }
+    // `line-break: anywhere` makes every typographic character unit a soft
+    // wrap opportunity (CSS Text 3 §5.3), which is the same per-character
+    // split path. It overrides `overflow-wrap: break-word`, whose emergency
+    // breaks are a subset of it.
+    if let Some(CssValue::Keyword(k)) = get_non_special(map, "line-break")
+        && k == "anywhere"
+    {
+        style.overflow_wrap = OverflowWrap::Anywhere;
+    }
     if let Some(CssValue::Keyword(k)) = get_non_special(map, "hyphens") {
         style.hyphens_manual = k != "none";
     }
@@ -20213,6 +20222,21 @@ mod tests {
         let parent = ComputedStyle::default();
         let s = compute_style(HtmlTag::Div, Some("word-break: break-all"), &parent);
         assert_eq!(s.overflow_wrap, OverflowWrap::Anywhere);
+    }
+
+    #[test]
+    fn line_break_anywhere_enables_per_char_wrapping() {
+        let parent = ComputedStyle::default();
+        let s = compute_style(HtmlTag::Div, Some("line-break: anywhere"), &parent);
+        assert_eq!(s.overflow_wrap, OverflowWrap::Anywhere);
+        let s = compute_style(
+            HtmlTag::Div,
+            Some("overflow-wrap: break-word; line-break: anywhere"),
+            &parent,
+        );
+        assert_eq!(s.overflow_wrap, OverflowWrap::Anywhere);
+        let s = compute_style(HtmlTag::Div, Some("line-break: strict"), &parent);
+        assert_eq!(s.overflow_wrap, OverflowWrap::Normal);
     }
 
     #[test]

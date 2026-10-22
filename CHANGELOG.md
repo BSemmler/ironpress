@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- Words next to brackets, slashes and plus signs no longer break mid-word.
+  Any word containing `(`, `)`, `[`, `]`, `{`, `}`, `/` or `+` used to be
+  breakable between every character, so prose such as `(the probation
+  period).` could wrap as `(t` / `he probation`. Such words now keep their
+  UAX #14 break opportunities like any other. Breaking anywhere is available
+  with `line-break: anywhere`, which is now parsed, or `word-break: break-all`.
 - The input nesting-depth guard counts element nesting the way the HTML
   tokenizer does. Void elements (`<br>`, `<img>`, `<col>`, …), self-closing
   SVG and MathML elements, comments, declarations and raw text element content
