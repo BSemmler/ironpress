@@ -29,6 +29,9 @@
 // Monochrome outline emoji fallback pack.
 #define IRONPRESS_FONT_PACK_EMOJI 5
 
+// The byte limit of a default Rust `ImageCache`: 64 MiB of encoded image data.
+#define IRONPRESS_IMAGE_CACHE_DEFAULT_BYTE_LIMIT ((64 * 1024) * 1024)
+
 // Named ISO A4 page size.
 #define IRONPRESS_PAGE_SIZE_A4 1
 
@@ -49,6 +52,9 @@ typedef struct IronpressConverter IronpressConverter;
 
 // Opaque owner of one categorized failure and its UTF-8 diagnostic.
 typedef struct IronpressError IronpressError;
+
+// Opaque owner of images encoded by earlier conversions.
+typedef struct IronpressImageCache IronpressImageCache;
 
 // Machine-readable result returned by every fallible C operation.
 typedef int32_t IronpressStatus;
@@ -162,6 +168,18 @@ IronpressStatus ironpress_converter_convert_html(const IronpressConverter *conve
                                                  IronpressBuffer **out_pdf,
                                                  IronpressError **out_error);
 
+// Convert UTF-8 HTML through a configured converter, reusing and filling
+// `image_cache`.
+//
+// # Safety
+//
+// Handles, input bytes, and output pointers must follow `ABI.md`.
+IronpressStatus ironpress_converter_convert_html_with_image_cache(const IronpressConverter *converter,
+                                                                  IronpressImageCache *image_cache,
+                                                                  IronpressBytes html,
+                                                                  IronpressBuffer **out_pdf,
+                                                                  IronpressError **out_error);
+
 // Convert UTF-8 Markdown through a configured converter.
 //
 // # Safety
@@ -171,6 +189,18 @@ IronpressStatus ironpress_converter_convert_markdown(const IronpressConverter *c
                                                      IronpressBytes markdown,
                                                      IronpressBuffer **out_pdf,
                                                      IronpressError **out_error);
+
+// Convert UTF-8 Markdown through a configured converter, reusing and filling
+// `image_cache`.
+//
+// # Safety
+//
+// Handles, input bytes, and output pointers must follow `ABI.md`.
+IronpressStatus ironpress_converter_convert_markdown_with_image_cache(const IronpressConverter *converter,
+                                                                      IronpressImageCache *image_cache,
+                                                                      IronpressBytes markdown,
+                                                                      IronpressBuffer **out_pdf,
+                                                                      IronpressError **out_error);
 
 // Release a converter and clear its owning handle.
 //
@@ -381,6 +411,42 @@ IronpressStatus ironpress_error_status(const IronpressError *error);
 IronpressStatus ironpress_html_to_pdf(IronpressBytes html,
                                       IronpressBuffer **out_pdf,
                                       IronpressError **out_error);
+
+// Return the bytes of encoded image data held, or zero for a null handle.
+//
+// # Safety
+//
+// A non-null `image_cache` must identify a live cache owned by the caller.
+size_t ironpress_image_cache_byte_len(const IronpressImageCache *image_cache);
+
+// Release an image cache and clear its owning handle.
+//
+// # Safety
+//
+// `image_cache` must identify the unique handle returned by this library.
+IronpressStatus ironpress_image_cache_free(IronpressImageCache **image_cache);
+
+// Return the number of encoded images held, or zero for a null handle.
+//
+// # Safety
+//
+// A non-null `image_cache` must identify a live cache owned by the caller.
+size_t ironpress_image_cache_len(const IronpressImageCache *image_cache);
+
+// Allocate an empty image cache holding up to `byte_limit` bytes of encoded
+// image data, and transfer it into an empty output slot.
+//
+// Pass the cache to the `_with_image_cache` conversions of every document
+// that repeats the same images. A later conversion writes an image an earlier
+// one already encoded at the same size instead of encoding it again. The
+// least recently used image is dropped first when the limit is reached.
+//
+// # Safety
+//
+// Output pointers must follow the ownership and slot rules in `ABI.md`.
+IronpressStatus ironpress_image_cache_new(size_t byte_limit,
+                                          IronpressImageCache **out_image_cache,
+                                          IronpressError **out_error);
 
 // Convert UTF-8 Markdown with a default one-shot converter.
 //

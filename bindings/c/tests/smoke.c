@@ -198,6 +198,52 @@ int main(int argc, char **argv) {
     require(ironpress_buffer_free(&pdf) == IRONPRESS_STATUS_OK,
             "Markdown PDF release failed");
 
+    IronpressImageCache *images = NULL;
+    require(ironpress_image_cache_new(IRONPRESS_IMAGE_CACHE_DEFAULT_BYTE_LIMIT, &images,
+                                      &error) == IRONPRESS_STATUS_OK,
+            "image cache allocation failed");
+    require(images != NULL && error == NULL, "image cache ownership is invalid");
+    require(ironpress_image_cache_len(images) == 0, "a new image cache is not empty");
+    IronpressBytes image_html = text(
+        "<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE"
+        "QVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" width=\"50\" height=\"50\">");
+    IronpressBuffer *uncached = NULL;
+    require(ironpress_converter_convert_html(converter, image_html, &uncached, &error) ==
+                IRONPRESS_STATUS_OK,
+            "uncached image conversion failed");
+    for (int pass = 0; pass < 2; pass++) {
+        require(ironpress_converter_convert_html_with_image_cache(
+                    converter, images, image_html, &pdf, &error) == IRONPRESS_STATUS_OK,
+                "cached image conversion failed");
+        require(ironpress_buffer_len(pdf) == ironpress_buffer_len(uncached) &&
+                    memcmp(ironpress_buffer_data(pdf), ironpress_buffer_data(uncached),
+                           ironpress_buffer_len(pdf)) == 0,
+                "the image cache changed the PDF");
+        require(ironpress_buffer_free(&pdf) == IRONPRESS_STATUS_OK,
+                "cached PDF release failed");
+    }
+    require(ironpress_image_cache_len(images) == 1 &&
+                ironpress_image_cache_byte_len(images) > 0,
+            "the conversion did not fill the image cache");
+    require(ironpress_buffer_free(&uncached) == IRONPRESS_STATUS_OK,
+            "uncached PDF release failed");
+    require(ironpress_converter_convert_markdown_with_image_cache(
+                converter, images, text("# Cached"), &pdf, &error) == IRONPRESS_STATUS_OK,
+            "cached Markdown conversion failed");
+    require(ironpress_buffer_free(&pdf) == IRONPRESS_STATUS_OK,
+            "cached Markdown PDF release failed");
+    require(ironpress_converter_convert_html_with_image_cache(converter, NULL, image_html,
+                                                              &pdf, &error) ==
+                IRONPRESS_STATUS_INVALID_HANDLE,
+            "null image cache returned the wrong status");
+    require(ironpress_error_free(&error) == IRONPRESS_STATUS_OK,
+            "image cache handle error release failed");
+    require(ironpress_image_cache_free(&images) == IRONPRESS_STATUS_OK,
+            "image cache release failed");
+    require(images == NULL, "image cache release did not clear the handle");
+    require(ironpress_image_cache_free(&images) == IRONPRESS_STATUS_OK,
+            "repeated image cache release was not safe");
+
     require(ironpress_converter_free(&converter) == IRONPRESS_STATUS_OK,
             "converter release failed");
     require(converter == NULL, "converter release did not clear the handle");

@@ -56,6 +56,30 @@ impl IronpressConverter {
     }
 }
 
+/// Opaque owner of images encoded by earlier conversions.
+pub struct IronpressImageCache {
+    pub(crate) images: ironpress_core::ImageCache,
+}
+
+impl IronpressImageCache {
+    /// Borrow a live image-cache handle for one foreign call.
+    ///
+    /// # Safety
+    ///
+    /// A non-null pointer must come from `ironpress_image_cache_new`, remain
+    /// exclusively accessible for the borrow, and not have been freed.
+    pub(crate) unsafe fn parse_mut<'a>(raw: *mut Self) -> Result<&'a mut Self, Failure> {
+        if raw.is_null() {
+            return Err(Failure::new(
+                IRONPRESS_STATUS_INVALID_HANDLE,
+                "image cache handle is null",
+            ));
+        }
+        // SAFETY: The foreign-call contract above requires a live unique handle.
+        Ok(unsafe { &mut *raw })
+    }
+}
+
 /// Opaque owner of PDF bytes allocated by Ironpress.
 pub struct IronpressBuffer {
     bytes: Vec<u8>,
@@ -298,6 +322,7 @@ mod tests {
         fn assert_send<T: Send>() {}
 
         assert_send::<IronpressConverter>();
+        assert_send::<IronpressImageCache>();
         assert_send::<IronpressBuffer>();
         assert_send::<IronpressError>();
     }
