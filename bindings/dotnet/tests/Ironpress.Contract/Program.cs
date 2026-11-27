@@ -12,6 +12,8 @@ internal static class Program
         ("disposed converters reject further work", DisposedConvertersRejectWork),
         ("equivalent converters produce identical bytes", EquivalentConvertersMatch),
         ("repeated ownership cycles remain valid", RepeatedOwnershipCyclesRemainValid),
+        ("an image cache leaves the PDF unchanged", ImageCacheLeavesPdfUnchanged),
+        ("disposed image caches reject further work", DisposedImageCachesRejectWork),
     ];
 
     private static int Main(string[] arguments)
@@ -132,6 +134,38 @@ internal static class Program
             using var converter = new HtmlConverter();
             StartsWithPdf(converter.ConvertHtml($"<p>cycle {iteration}</p>"));
         }
+    }
+
+    private const string ImageHtml =
+        "<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE"
+        + "QVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" width=\"50\" height=\"50\">";
+
+    private static void ImageCacheLeavesPdfUnchanged(TestContext _)
+    {
+        using var converter = new HtmlConverter().SetCompression(false);
+        using var images = new ImageCache();
+        Equal(0L, images.Count, "A new image cache is not empty.");
+
+        var uncached = converter.ConvertHtml(ImageHtml);
+        SequenceEqual(uncached, converter.ConvertHtml(ImageHtml, images));
+        SequenceEqual(uncached, converter.ConvertHtml(ImageHtml, images));
+        Equal(1L, images.Count, "The conversion did not fill the image cache.");
+        if (images.ByteCount <= 0)
+        {
+            throw new InvalidOperationException("The image cache holds no bytes.");
+        }
+
+        StartsWithPdf(converter.ConvertMarkdown("# Cached", images));
+    }
+
+    private static void DisposedImageCachesRejectWork(TestContext _)
+    {
+        using var converter = new HtmlConverter();
+        var images = new ImageCache();
+        images.Dispose();
+
+        Throws<ObjectDisposedException>(() => converter.ConvertHtml(ImageHtml, images));
+        Throws<ArgumentOutOfRangeException>(() => new ImageCache(-1));
     }
 
     private static void StartsWithPdf(byte[] bytes)

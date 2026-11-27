@@ -44,6 +44,12 @@ The managed facade covers the portable C ABI contract:
 - custom TrueType font bytes
 - optional Japanese, Korean, Simplified Chinese, Traditional Chinese, and emoji packs
 
+To reuse images that every document repeats, such as a certificate frame or a
+watermark, pass one `ImageCache` to each conversion:
+`converter.ConvertHtml(html, images)`. Later conversions write those images from
+the cache instead of encoding them again. `ImageCache` is also `IDisposable`, and
+concurrent conversions need their own caches.
+
 Every mutating method returns the same converter for fluent configuration.
 `HtmlConverter` owns a native resource and implements `IDisposable`; use a
 `using` declaration or call `Dispose` deterministically. A converter may move

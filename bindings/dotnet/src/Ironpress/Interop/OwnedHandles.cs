@@ -31,6 +31,24 @@ internal sealed class ConverterHandle : OwnedHandle
     }
 }
 
+internal sealed class ImageCacheHandle : OwnedHandle
+{
+    private ImageCacheHandle(nint ownedHandle)
+        : base(ownedHandle)
+    {
+    }
+
+    internal static ImageCacheHandle Take(nint ownedHandle) => new(ownedHandle);
+
+    protected override bool ReleaseHandle()
+    {
+        var ownedHandle = handle;
+        var status = NativeMethods.ironpress_image_cache_free(ref ownedHandle);
+        handle = ownedHandle;
+        return status == NativeStatus.Ok && IsInvalid;
+    }
+}
+
 internal sealed class BufferHandle : OwnedHandle
 {
     private BufferHandle(nint ownedHandle)
