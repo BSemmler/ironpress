@@ -101,6 +101,7 @@ pub(crate) mod util;
 
 pub use error::IronpressError;
 pub use font_pack::{FontPack, FontPackError, FontPackKind, UnknownFontPackKind};
+pub use render::pdf::ImageCache;
 pub use security::resources::{InvalidRemoteHost, NetworkPolicy, RemoteHost};
 pub use style::raster_quality::{CoverageCompression, JpegCompression, RasterQuality};
 pub use types::{CornerRadii, CornerRadius, EdgeSizes, Margin, PageSize};
@@ -554,10 +555,36 @@ impl HtmlConverter {
         self.convert(&html)
     }
 
+    /// Convert a Markdown string to PDF, reusing images encoded by earlier
+    /// conversions that shared `images`. See [`ImageCache`].
+    pub fn convert_markdown_with_image_cache(
+        &self,
+        md: &str,
+        images: &mut ImageCache,
+    ) -> Result<Vec<u8>, IronpressError> {
+        let html = parser::markdown::markdown_to_html(md);
+        self.convert_with_image_cache(&html, images)
+    }
+
     /// Convert an HTML string to PDF bytes.
     pub fn convert(&self, html: &str) -> Result<Vec<u8>, IronpressError> {
         let mut buf = Vec::new();
         self.convert_to_writer(html, &mut buf)?;
+        Ok(buf)
+    }
+
+    /// Convert an HTML string to PDF, reusing images encoded by earlier
+    /// conversions that shared `images`.
+    ///
+    /// Use this when many documents repeat the same images, such as a
+    /// certificate frame or a watermark. See [`ImageCache`].
+    pub fn convert_with_image_cache(
+        &self,
+        html: &str,
+        images: &mut ImageCache,
+    ) -> Result<Vec<u8>, IronpressError> {
+        let mut buf = Vec::new();
+        self.convert_to_writer_with_image_cache(html, &mut buf, images)?;
         Ok(buf)
     }
 
@@ -566,6 +593,17 @@ impl HtmlConverter {
         &self,
         html: &str,
         writer: &mut W,
+    ) -> Result<(), IronpressError> {
+        self.convert_to_writer_with_image_cache(html, writer, &mut ImageCache::with_byte_limit(0))
+    }
+
+    /// Streaming variant of
+    /// [`convert_with_image_cache`](HtmlConverter::convert_with_image_cache).
+    pub fn convert_to_writer_with_image_cache<W: std::io::Write>(
+        &self,
+        html: &str,
+        writer: &mut W,
+        images: &mut ImageCache,
     ) -> Result<(), IronpressError> {
         let resources = security::resources::DocumentResources::new(
             self.resources.base.as_deref(),
@@ -853,6 +891,7 @@ impl HtmlConverter {
             writer,
             render_opts,
             resource_loader,
+            images,
         )
     }
 

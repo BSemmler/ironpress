@@ -1,3 +1,4 @@
+use std::cell::{RefCell, RefMut};
 use std::path::Path;
 
 use magnus::{Error, RString, Ruby, class, define_module, function, method, prelude::*};
@@ -12,6 +13,42 @@ fn markdown_to_pdf(ruby: &Ruby, markdown: String) -> Result<RString, Error> {
     let pdf = ironpress_core::markdown_to_pdf(&markdown)
         .map_err(|error| Error::new(ruby.exception_runtime_error(), error.to_string()))?;
     Ok(ruby.str_from_slice(&pdf))
+}
+
+/// Images encoded by earlier conversions, kept for later ones.
+///
+/// Ruby hands wrapped objects to Rust only by shared reference, so the cache a
+/// conversion fills sits in a `RefCell`. A conversion holds the GVL and calls
+/// back into no Ruby code, so its borrow can never overlap another one; the
+/// overlap is still reported as an error instead of a panic.
+#[magnus::wrap(class = "Ironpress::NativeImageCache", free_immediately, size)]
+struct NativeImageCache {
+    images: RefCell<ironpress_core::ImageCache>,
+}
+
+impl NativeImageCache {
+    fn new(byte_limit: usize) -> Self {
+        Self {
+            images: RefCell::new(ironpress_core::ImageCache::with_byte_limit(byte_limit)),
+        }
+    }
+
+    fn borrow_mut(&self, ruby: &Ruby) -> Result<RefMut<'_, ironpress_core::ImageCache>, Error> {
+        self.images.try_borrow_mut().map_err(|_| {
+            Error::new(
+                ruby.exception_runtime_error(),
+                "this image cache is already in use by another conversion",
+            )
+        })
+    }
+
+    fn size(ruby: &Ruby, this: &Self) -> Result<usize, Error> {
+        Ok(this.borrow_mut(ruby)?.len())
+    }
+
+    fn byte_size(ruby: &Ruby, this: &Self) -> Result<usize, Error> {
+        Ok(this.borrow_mut(ruby)?.byte_len())
+    }
 }
 
 #[magnus::wrap(class = "Ironpress::NativeConverter", free_immediately, size)]
@@ -166,6 +203,72 @@ impl NativeConverter {
         Ok(ruby.str_from_slice(&pdf))
     }
 
+    fn html_pdf_with_image_cache(
+        &self,
+        ruby: &Ruby,
+        html: &str,
+        image_cache: &NativeImageCache,
+    ) -> Result<Vec<u8>, Error> {
+        self.converter
+            .convert_with_image_cache(html, &mut image_cache.borrow_mut(ruby)?)
+            .map_err(|error| Error::new(ruby.exception_runtime_error(), error.to_string()))
+    }
+
+    fn markdown_pdf_with_image_cache(
+        &self,
+        ruby: &Ruby,
+        markdown: &str,
+        image_cache: &NativeImageCache,
+    ) -> Result<Vec<u8>, Error> {
+        self.converter
+            .convert_markdown_with_image_cache(markdown, &mut image_cache.borrow_mut(ruby)?)
+            .map_err(|error| Error::new(ruby.exception_runtime_error(), error.to_string()))
+    }
+
+    fn convert_with_image_cache(
+        ruby: &Ruby,
+        this: &Self,
+        html: String,
+        image_cache: &NativeImageCache,
+    ) -> Result<RString, Error> {
+        let pdf = this.html_pdf_with_image_cache(ruby, &html, image_cache)?;
+        Ok(ruby.str_from_slice(&pdf))
+    }
+
+    fn convert_markdown_with_image_cache(
+        ruby: &Ruby,
+        this: &Self,
+        markdown: String,
+        image_cache: &NativeImageCache,
+    ) -> Result<RString, Error> {
+        let pdf = this.markdown_pdf_with_image_cache(ruby, &markdown, image_cache)?;
+        Ok(ruby.str_from_slice(&pdf))
+    }
+
+    fn convert_to_file_with_image_cache(
+        ruby: &Ruby,
+        this: &Self,
+        html: String,
+        path: String,
+        image_cache: &NativeImageCache,
+    ) -> Result<(), Error> {
+        let pdf = this.html_pdf_with_image_cache(ruby, &html, image_cache)?;
+        std::fs::write(path, pdf)
+            .map_err(|error| Error::new(ruby.exception_runtime_error(), error.to_string()))
+    }
+
+    fn convert_markdown_to_file_with_image_cache(
+        ruby: &Ruby,
+        this: &Self,
+        markdown: String,
+        path: String,
+        image_cache: &NativeImageCache,
+    ) -> Result<(), Error> {
+        let pdf = this.markdown_pdf_with_image_cache(ruby, &markdown, image_cache)?;
+        std::fs::write(path, pdf)
+            .map_err(|error| Error::new(ruby.exception_runtime_error(), error.to_string()))
+    }
+
     fn convert_to_file(ruby: &Ruby, this: &Self, html: String, path: String) -> Result<(), Error> {
         let pdf = this
             .converter
@@ -237,12 +340,36 @@ fn init(_ruby: &Ruby) -> Result<(), Error> {
         method!(NativeConverter::convert_markdown, 1),
     )?;
     class.define_method(
+        "convert_with_image_cache",
+        method!(NativeConverter::convert_with_image_cache, 2),
+    )?;
+    class.define_method(
+        "convert_markdown_with_image_cache",
+        method!(NativeConverter::convert_markdown_with_image_cache, 2),
+    )?;
+    class.define_method(
         "convert_to_file",
         method!(NativeConverter::convert_to_file, 2),
+    )?;
+    class.define_method(
+        "convert_to_file_with_image_cache",
+        method!(NativeConverter::convert_to_file_with_image_cache, 3),
+    )?;
+    class.define_method(
+        "convert_markdown_to_file_with_image_cache",
+        method!(
+            NativeConverter::convert_markdown_to_file_with_image_cache,
+            3
+        ),
     )?;
     class.define_method(
         "convert_markdown_to_file",
         method!(NativeConverter::convert_markdown_to_file, 2),
     )?;
+
+    let image_cache = module.define_class("NativeImageCache", class::object())?;
+    image_cache.define_singleton_method("new", function!(NativeImageCache::new, 1))?;
+    image_cache.define_method("size", method!(NativeImageCache::size, 0))?;
+    image_cache.define_method("byte_size", method!(NativeImageCache::byte_size, 0))?;
     Ok(())
 }

@@ -55,6 +55,20 @@ markdown_pdf = converter.convert_markdown("# Results")
 Python configuration methods mutate the converter. Use `convert_to_file` or
 `convert_markdown_to_file` when direct output is more convenient than bytes.
 
+## Reuse images across documents
+
+Pass one `ImageCache` to every conversion of a batch that repeats the same
+images, such as a certificate frame or a watermark. Later conversions write
+those images from the cache instead of encoding them again:
+
+```python
+images = ironpress.ImageCache()  # 64 MiB of encoded images; ImageCache(byte_limit=...)
+for name in ["Ada", "Grace"]:
+    pdf = converter.convert(f"<h1>Certificate for {name}</h1>", image_cache=images)
+```
+
+Every conversion method accepts `image_cache`. Use one cache per thread.
+
 ## Local resources and fonts
 
 Local URLs are denied until a canonical boundary is configured:

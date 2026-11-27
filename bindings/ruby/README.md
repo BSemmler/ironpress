@@ -61,6 +61,21 @@ markdown_pdf = converter.convert_markdown("# Results")
 Configuration methods return the converter, so policies compose in an idiomatic
 chain. Use `convert_to_file` or `convert_markdown_to_file` for direct output.
 
+## Reuse images across documents
+
+Pass one `Ironpress::ImageCache` to every conversion of a batch that repeats
+the same images, such as a certificate frame or a watermark. Later conversions
+write those images from the cache instead of encoding them again:
+
+```ruby
+images = Ironpress::ImageCache.new # 64 MiB of encoded images; ImageCache.new(byte_limit)
+%w[Ada Grace].each do |name|
+  pdf = converter.convert("<h1>Certificate for #{name}</h1>", image_cache: images)
+end
+```
+
+Every conversion method accepts `image_cache:`. Use one cache per thread.
+
 ## Local resources and fonts
 
 Local URLs are denied until a canonical boundary is configured:

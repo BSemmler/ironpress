@@ -30,7 +30,7 @@ Page-size and font-pack constants are fixed-width integers.
 
 ## Ownership
 
-Converters, PDF buffers, and errors are opaque handles. Every successful
+Converters, image caches, PDF buffers, and errors are opaque handles. Every successful
 allocation has exactly one owner and one matching free function. Free functions
 take a pointer to the caller's handle, release the allocation, and replace the
 handle with null. Repeating the free operation through that same handle is safe.
@@ -53,17 +53,29 @@ Rust implementation layouts.
 All fallible exported operations catch Rust panics. An unexpected panic becomes
 `IRONPRESS_STATUS_INTERNAL` and never unwinds into foreign code.
 
+## Image caches
+
+An image cache keeps images encoded by earlier conversions so later
+conversions can write them without decoding, resampling, or recompressing them
+again. `ironpress_image_cache_new` takes a byte limit for the encoded image data
+it holds (`IRONPRESS_IMAGE_CACHE_DEFAULT_BYTE_LIMIT` matches the Rust default);
+the least recently used image is dropped first. The `_with_image_cache`
+conversions read and fill the cache. A cache may be shared by converters with
+different settings: an image is reused only under the same image options.
+
 ## Threads
 
 A converter has one owner. It may move between threads while idle, but the same
-handle must not be read, configured, converted, or freed concurrently. Returned
-buffers and errors follow the same exclusive-lifetime rule.
+handle must not be read, configured, converted, or freed concurrently. Image
+caches, returned buffers, and errors follow the same exclusive-lifetime rule:
+two conversions that run at the same time need two caches.
 
 ## Scope of generation 1
 
 The initial contract includes HTML and Markdown conversion, reusable converters,
-page geometry, quality controls, sanitization, headers, footers, custom TrueType
-fonts, and optional CJK or emoji font packs. Local paths, direct file output,
+image caches shared between conversions, page geometry, quality controls,
+sanitization, headers, footers, custom TrueType fonts, and optional CJK or emoji
+font packs. Local paths, direct file output,
 streaming, asynchronous conversion, and remote resources are intentionally
 absent. They can be added later without changing existing symbols.
 

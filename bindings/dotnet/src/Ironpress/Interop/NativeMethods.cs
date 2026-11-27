@@ -182,6 +182,43 @@ internal static partial class NativeMethods
 
     [LibraryImport(LibraryName)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial NativeStatus ironpress_converter_convert_html_with_image_cache(
+        ConverterHandle converter,
+        ImageCacheHandle imageCache,
+        NativeBytes html,
+        out nint pdf,
+        out nint error);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial NativeStatus ironpress_converter_convert_markdown_with_image_cache(
+        ConverterHandle converter,
+        ImageCacheHandle imageCache,
+        NativeBytes markdown,
+        out nint pdf,
+        out nint error);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial NativeStatus ironpress_image_cache_new(
+        nuint byteLimit,
+        out nint imageCache,
+        out nint error);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial NativeStatus ironpress_image_cache_free(ref nint imageCache);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nuint ironpress_image_cache_len(ImageCacheHandle imageCache);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nuint ironpress_image_cache_byte_len(ImageCacheHandle imageCache);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial nint ironpress_buffer_data(BufferHandle buffer);
 
     [LibraryImport(LibraryName)]

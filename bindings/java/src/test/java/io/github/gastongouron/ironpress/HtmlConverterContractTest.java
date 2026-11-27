@@ -14,6 +14,9 @@ import org.junit.jupiter.api.Test;
 final class HtmlConverterContractTest {
   private static final Path CUSTOM_FONT = requiredFixture("ironpress.customFont");
   private static final Path FONT_PACK = requiredFixture("ironpress.fontPack");
+  private static final String IMAGE_HTML =
+      "<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE"
+          + "QVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" width=\"50\" height=\"50\">";
 
   @Test
   void nativeContractIdentifiesThePackageAndAbi() {
@@ -104,6 +107,31 @@ final class HtmlConverterContractTest {
       try (var converter = new HtmlConverter()) {
         assertPdf(converter.convertHtml("<p>cycle " + iteration + "</p>"));
       }
+    }
+  }
+
+  @Test
+  void anImageCacheLeavesThePdfUnchanged() {
+    try (var converter = new HtmlConverter().setCompression(false);
+        var images = new ImageCache()) {
+      assertEquals(0, images.size());
+      var uncached = converter.convertHtml(IMAGE_HTML);
+      assertArrayEquals(uncached, converter.convertHtml(IMAGE_HTML, images));
+      assertArrayEquals(uncached, converter.convertHtml(IMAGE_HTML, images));
+      assertEquals(1, images.size());
+      assertTrue(images.byteSize() > 0);
+      assertPdf(converter.convertMarkdown("# Cached", images));
+    }
+  }
+
+  @Test
+  void closedImageCachesRejectFurtherWork() {
+    try (var converter = new HtmlConverter()) {
+      var images = new ImageCache();
+      images.close();
+      images.close();
+      assertThrows(IllegalStateException.class, () -> converter.convertHtml(IMAGE_HTML, images));
+      assertThrows(IllegalArgumentException.class, () -> new ImageCache(-1));
     }
   }
 

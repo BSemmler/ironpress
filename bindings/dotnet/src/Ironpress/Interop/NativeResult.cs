@@ -47,6 +47,29 @@ internal static class NativeResult
         }
     }
 
+    internal static ImageCacheHandle TakeImageCache(
+        NativeStatus status,
+        nint imageCache,
+        nint error)
+    {
+        var imageCacheOwner = ImageCacheHandle.Take(imageCache);
+        try
+        {
+            EnsureSuccess(status, error);
+            if (imageCacheOwner.IsInvalid)
+            {
+                throw ContractViolation("Native image cache allocation returned no owner.");
+            }
+
+            return imageCacheOwner;
+        }
+        catch
+        {
+            imageCacheOwner.Dispose();
+            throw;
+        }
+    }
+
     internal static byte[] TakePdf(NativeStatus status, nint pdf, nint error)
     {
         using var pdfOwner = BufferHandle.Take(pdf);

@@ -77,6 +77,29 @@ interface NativeApi extends Library {
   int ironpress_converter_convert_markdown(
       Pointer converter, NativeBytes markdown, PointerByReference pdf, PointerByReference error);
 
+  int ironpress_converter_convert_html_with_image_cache(
+      Pointer converter,
+      Pointer imageCache,
+      NativeBytes html,
+      PointerByReference pdf,
+      PointerByReference error);
+
+  int ironpress_converter_convert_markdown_with_image_cache(
+      Pointer converter,
+      Pointer imageCache,
+      NativeBytes markdown,
+      PointerByReference pdf,
+      PointerByReference error);
+
+  int ironpress_image_cache_new(
+      SizeT byteLimit, PointerByReference imageCache, PointerByReference error);
+
+  int ironpress_image_cache_free(PointerByReference imageCache);
+
+  SizeT ironpress_image_cache_len(Pointer imageCache);
+
+  SizeT ironpress_image_cache_byte_len(Pointer imageCache);
+
   Pointer ironpress_buffer_data(Pointer buffer);
 
   SizeT ironpress_buffer_len(Pointer buffer);

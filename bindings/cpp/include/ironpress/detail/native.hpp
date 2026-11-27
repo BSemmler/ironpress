@@ -25,6 +25,14 @@ struct ConverterDeleter final {
     }
 };
 
+struct ImageCacheDeleter final {
+    void operator()(IronpressImageCache* image_cache) const noexcept {
+        if (image_cache != nullptr) {
+            (void)ironpress_image_cache_free(&image_cache);
+        }
+    }
+};
+
 struct ErrorDeleter final {
     void operator()(IronpressError* error) const noexcept {
         if (error != nullptr) {
@@ -36,6 +44,8 @@ struct ErrorDeleter final {
 using BufferOwner = std::unique_ptr<IronpressBuffer, BufferDeleter>;
 using ConverterOwner = std::unique_ptr<IronpressConverter, ConverterDeleter>;
 using ErrorOwner = std::unique_ptr<IronpressError, ErrorDeleter>;
+using ImageCacheOwner =
+    std::unique_ptr<IronpressImageCache, ImageCacheDeleter>;
 
 /// Parses native results once and releases every native error owner.
 class NativeResult final {

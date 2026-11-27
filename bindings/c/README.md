@@ -91,6 +91,13 @@ footers, custom TrueType fonts, and optional CJK or emoji packs.
 Rich page margins use `ironpress_converter_set_header_html` and
 `ironpress_converter_set_footer_html`; the existing setters remain plain text.
 
+Documents that repeat the same images, such as a certificate frame, can share an
+`IronpressImageCache` from `ironpress_image_cache_new`. Pass it to
+`ironpress_converter_convert_html_with_image_cache` or
+`ironpress_converter_convert_markdown_with_image_cache`, and later conversions
+write those images from the cache instead of encoding them again. Release it
+with `ironpress_image_cache_free`.
+
 Local paths, direct file output, streaming, asynchronous conversion, and remote
 resources are intentionally absent. Applications provide document and font
 bytes explicitly, and the binding never enables network access.

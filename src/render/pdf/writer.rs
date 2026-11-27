@@ -35,6 +35,8 @@ pub(crate) struct PdfWriter {
     /// Document images keyed by source identity and final display sampling.
     pub(super) layout_image_objects:
         std::collections::HashMap<super::writer_images::LayoutImageCacheKey, usize>,
+    /// Encoded images shared with the conversion's other renders.
+    pub(super) images: super::writer_images::ImageCache,
     pub(super) page_ids: Vec<usize>,
     /// Annotation object IDs grouped by page index.
     pub(super) page_annotations: Vec<Vec<usize>>,
@@ -79,13 +81,6 @@ impl PdfWriter {
     #[cfg(test)]
     pub(super) fn new() -> Self {
         Self::default()
-    }
-
-    pub(super) fn with_resources(resources: crate::security::resources::ResourceLoader) -> Self {
-        Self {
-            resources,
-            ..Self::default()
-        }
     }
 
     pub(crate) fn load_document_resource(

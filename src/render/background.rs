@@ -333,46 +333,17 @@ pub(crate) fn register_background_image(
                 pdf_writer.add_raw_png_image_object(&encoded)?,
                 Some(draw_box),
             )
-        } else if crate::parser::png::is_png(&raw) {
-            let png = crate::parser::png::parse_png(&raw)?;
-            let metadata = crate::layout::engine::PngMetadata {
-                channels: png.channels,
-                bit_depth: png.bit_depth,
-            };
-            let format = match png.channels {
-                2 | 4 => crate::layout::engine::ImageFormat::PngAlpha,
-                _ => crate::layout::engine::ImageFormat::Png,
-            };
+        } else {
+            let image = crate::layout::images::load_image_bytes(raw)?;
             (
-                pdf_writer.add_decodable_source_image_object(
-                    &raw,
-                    png.width,
-                    png.height,
-                    format,
-                    Some(&metadata),
+                pdf_writer.add_decodable_layout_image_object(
+                    &image,
                     display_box.width,
                     display_box.height,
+                    crate::style::computed::ImageRendering::Auto,
                 )?,
                 None,
             )
-        } else if raw.starts_with(&[0xFF, 0xD8]) {
-            (
-                {
-                    let (width, height) = crate::parser::jpeg::parse_jpeg_dimensions(&raw)?;
-                    pdf_writer.add_source_image_object(
-                        &raw,
-                        width,
-                        height,
-                        crate::layout::engine::ImageFormat::Jpeg,
-                        None,
-                        display_box.width,
-                        display_box.height,
-                    )
-                },
-                None,
-            )
-        } else {
-            return None;
         };
 
     let name = format!("Im{obj_id}");

@@ -214,6 +214,27 @@ int main(int argc, char** argv) {
                            equivalent_cpp_pdf.data()),
             "equivalent C and C++ configurations produced different PDFs");
 
+    const auto image_source = std::string_view(
+        "<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE"
+        "QVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" width=\"50\" height=\"50\">");
+    const auto uncached_pdf = equivalent_converter.convert_html(image_source);
+    ironpress::ImageCache images;
+    require(images && images.size() == 0, "a new image cache is not empty");
+    for (int pass = 0; pass < 2; ++pass) {
+        const auto cached_pdf =
+            equivalent_converter.convert_html(image_source, images);
+        require(cached_pdf.size() == uncached_pdf.size() &&
+                    std::equal(cached_pdf.data(),
+                               cached_pdf.data() + cached_pdf.size(),
+                               uncached_pdf.data()),
+                "the image cache changed the PDF");
+    }
+    require(images.size() == 1 && images.byte_size() > 0,
+            "the conversion did not fill the image cache");
+    require_pdf(equivalent_converter.convert_markdown("# Cached", images));
+    ironpress::ImageCache moved_images = std::move(images);
+    require(moved_images && !images, "moving an image cache kept two owners");
+
     for (int iteration = 0; iteration < 25; ++iteration) {
         ironpress::Converter cycle;
         auto cycle_pdf = cycle.convert_html("<p>ownership cycle</p>");

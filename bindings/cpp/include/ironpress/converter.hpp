@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ironpress/image_cache.hpp"
 #include "ironpress/pdf.hpp"
 
 #include <cstdint>
@@ -165,6 +166,28 @@ public:
         IronpressError* error = nullptr;
         const auto status = ironpress_converter_convert_markdown(
             owner_.get(), detail::text(markdown), &pdf, &error);
+        return Pdf::take(status, pdf, error);
+    }
+
+    /// Convert UTF-8 HTML, reusing and filling `images`.
+    [[nodiscard]] Pdf convert_html(std::string_view html,
+                                   ImageCache& images) const {
+        IronpressBuffer* pdf = nullptr;
+        IronpressError* error = nullptr;
+        const auto status = ironpress_converter_convert_html_with_image_cache(
+            owner_.get(), images.owner_.get(), detail::text(html), &pdf, &error);
+        return Pdf::take(status, pdf, error);
+    }
+
+    /// Convert UTF-8 Markdown, reusing and filling `images`.
+    [[nodiscard]] Pdf convert_markdown(std::string_view markdown,
+                                       ImageCache& images) const {
+        IronpressBuffer* pdf = nullptr;
+        IronpressError* error = nullptr;
+        const auto status =
+            ironpress_converter_convert_markdown_with_image_cache(
+                owner_.get(), images.owner_.get(), detail::text(markdown), &pdf,
+                &error);
         return Pdf::take(status, pdf, error);
     }
 

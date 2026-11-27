@@ -15,6 +15,7 @@ conventions of its runtime while sharing the portable converter contract below.
 | Sanitization | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Plain-text and HTML headers/footers | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Custom TTF fonts | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Image cache shared between conversions | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Optional CJK and emoji packs | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Local resource boundary | Yes | No | No | No | No | Yes | Yes | No | No |
 | Direct file output | Yes | No | No | No | No | Yes | Yes | No | No |

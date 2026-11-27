@@ -8,6 +8,10 @@ import ironpress
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 FONT_PACK = REPOSITORY_ROOT / "tests" / "fonts" / "IronpressCjkVertical.ttf"
+IMAGE_HTML = (
+    '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE'
+    'QVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==" width="50" height="50">'
+)
 
 PORTABLE_CONVERTER_METHODS = {
     "page_size",
@@ -88,6 +92,31 @@ class BindingContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "cjk-jp, cjk-kr, cjk-sc, cjk-tc, or emoji"):
             converter.add_font_pack("unknown", b"not a font")
+
+    def test_an_image_cache_leaves_the_pdf_unchanged(self):
+        converter = ironpress.HtmlConverter()
+        converter.compress(False)
+        images = ironpress.ImageCache()
+        self.assertEqual(len(images), 0)
+
+        uncached = converter.convert(IMAGE_HTML)
+
+        self.assertEqual(converter.convert(IMAGE_HTML, image_cache=images), uncached)
+        self.assertEqual(converter.convert(IMAGE_HTML, images), uncached)
+        self.assertEqual(len(images), 1)
+        self.assertGreater(images.byte_len, 0)
+        self.assertTrue(converter.convert_markdown("# Cached", images).startswith(b"%PDF"))
+
+    def test_an_image_cache_has_a_byte_limit(self):
+        self.assertEqual(ironpress.ImageCache.DEFAULT_BYTE_LIMIT, 64 * 1024 * 1024)
+        converter = ironpress.HtmlConverter()
+        images = ironpress.ImageCache(byte_limit=0)
+
+        converter.convert(IMAGE_HTML, image_cache=images)
+
+        self.assertEqual(len(images), 0)
+        with self.assertRaises(OverflowError):
+            ironpress.ImageCache(-1)
 
     def test_native_file_output_writes_the_pdf(self):
         converter = ironpress.HtmlConverter()

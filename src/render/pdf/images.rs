@@ -45,14 +45,11 @@ impl crate::render::svg_to_pdf::SvgImageObjectSink for SvgPageImageSink<'_> {
         display_h_pt: f32,
     ) -> Option<String> {
         let asset = crate::layout::images::load_image_bytes(raw_image.to_vec())?;
-        let obj_id = self.pdf_writer.add_decodable_source_image_object(
-            &asset.data,
-            asset.source_width,
-            asset.source_height,
-            asset.format,
-            asset.png_metadata.as_ref(),
+        let obj_id = self.pdf_writer.add_decodable_layout_image_object(
+            &asset,
             display_w_pt,
             display_h_pt,
+            crate::style::computed::ImageRendering::Auto,
         )?;
         Some(self.register_page_image(obj_id))
     }
