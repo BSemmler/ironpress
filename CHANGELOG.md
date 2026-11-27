@@ -14,6 +14,16 @@
   cache is bounded by bytes of encoded image data (64 MiB by default,
   `ImageCache::with_byte_limit` to change) and drops the least recently used
   image first. `convert_markdown_with_image_cache` does the same for Markdown.
+- Every language binding exposes the image cache. The C ABI adds
+  `IronpressImageCache` (`ironpress_image_cache_new`, `_free`, `_len`,
+  `_byte_len`) and `ironpress_converter_convert_html_with_image_cache` /
+  `_convert_markdown_with_image_cache`, without changing existing symbols. C++
+  has `ironpress::ImageCache` and `convert_html(html, images)` overloads, .NET
+  `ImageCache` and `ConvertHtml(html, images)`, Java `ImageCache` and
+  `convertHtml(html, images)`, Python `ImageCache` and an `image_cache` argument
+  on every conversion method, Ruby `Ironpress::ImageCache` and an
+  `image_cache:` keyword, and WebAssembly `ImageCache` with
+  `htmlToPdfWithImageCache` / `markdownToPdfWithImageCache`.
 
 ### Changed
 
