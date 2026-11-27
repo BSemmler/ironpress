@@ -31,6 +31,53 @@ fn markdown_to_pdf(markdown: &str) -> PyResult<Vec<u8>> {
     ironpress_core::markdown_to_pdf(markdown).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// Images encoded by earlier conversions, kept for later ones.
+///
+/// Pass one cache to every conversion of a batch that repeats the same images,
+/// such as a certificate frame or a watermark. A later conversion writes an
+/// image that an earlier one already encoded at the same size instead of
+/// encoding it again.
+///
+/// Args:
+///     byte_limit: Bytes of encoded image data to hold, 64 MiB by default.
+///         The least recently used image is dropped first.
+///
+/// Example:
+///     >>> from ironpress import HtmlConverter, ImageCache
+///     >>> converter = HtmlConverter()
+///     >>> images = ImageCache()
+///     >>> pdf = converter.convert("<h1>Hello</h1>", image_cache=images)
+#[pyclass]
+struct ImageCache {
+    images: ironpress_core::ImageCache,
+}
+
+#[pymethods]
+impl ImageCache {
+    /// The byte limit of a default cache: 64 MiB of encoded image data.
+    #[classattr]
+    const DEFAULT_BYTE_LIMIT: usize = ironpress_core::ImageCache::DEFAULT_BYTE_LIMIT;
+
+    #[new]
+    #[pyo3(signature = (byte_limit = ironpress_core::ImageCache::DEFAULT_BYTE_LIMIT))]
+    fn new(byte_limit: usize) -> Self {
+        Self {
+            images: ironpress_core::ImageCache::with_byte_limit(byte_limit),
+        }
+    }
+
+    /// Number of encoded images held.
+    fn __len__(&self) -> usize {
+        self.images.len()
+    }
+
+    /// Bytes of encoded image data held.
+    #[getter]
+    fn byte_len(&self) -> usize {
+        self.images.byte_len()
+    }
+}
+
 /// A configurable HTML-to-PDF converter.
 ///
 /// Example:
@@ -52,6 +99,34 @@ impl HtmlConverter {
         configure: impl FnOnce(ironpress_core::HtmlConverter) -> ironpress_core::HtmlConverter,
     ) {
         self.converter = configure(std::mem::take(&mut self.converter));
+    }
+
+    fn render_html(
+        &self,
+        html: &str,
+        image_cache: Option<PyRefMut<'_, ImageCache>>,
+    ) -> PyResult<Vec<u8>> {
+        match image_cache {
+            Some(mut cache) => self
+                .converter
+                .convert_with_image_cache(html, &mut cache.images),
+            None => self.converter.convert(html),
+        }
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    fn render_markdown(
+        &self,
+        markdown: &str,
+        image_cache: Option<PyRefMut<'_, ImageCache>>,
+    ) -> PyResult<Vec<u8>> {
+        match image_cache {
+            Some(mut cache) => self
+                .converter
+                .convert_markdown_with_image_cache(markdown, &mut cache.images),
+            None => self.converter.convert_markdown(markdown),
+        }
+        .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }
 
@@ -324,32 +399,40 @@ impl HtmlConverter {
     ///
     /// Args:
     ///     html: HTML string to convert.
+    ///     image_cache: Optional ImageCache to reuse and fill.
     ///
     /// Returns:
     ///     PDF document as bytes.
     ///
     /// Raises:
     ///     ValueError: If conversion fails.
-    fn convert(&self, html: &str) -> PyResult<Vec<u8>> {
-        self.converter
-            .convert(html)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+    #[pyo3(signature = (html, image_cache = None))]
+    fn convert(
+        &self,
+        html: &str,
+        image_cache: Option<PyRefMut<'_, ImageCache>>,
+    ) -> PyResult<Vec<u8>> {
+        self.render_html(html, image_cache)
     }
 
     /// Convert Markdown to PDF bytes.
     ///
     /// Args:
     ///     markdown: Markdown string to convert.
+    ///     image_cache: Optional ImageCache to reuse and fill.
     ///
     /// Returns:
     ///     PDF document as bytes.
     ///
     /// Raises:
     ///     ValueError: If conversion fails.
-    fn convert_markdown(&self, markdown: &str) -> PyResult<Vec<u8>> {
-        self.converter
-            .convert_markdown(markdown)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+    #[pyo3(signature = (markdown, image_cache = None))]
+    fn convert_markdown(
+        &self,
+        markdown: &str,
+        image_cache: Option<PyRefMut<'_, ImageCache>>,
+    ) -> PyResult<Vec<u8>> {
+        self.render_markdown(markdown, image_cache)
     }
 
     /// Convert HTML to PDF and write the result to a file.
@@ -357,14 +440,18 @@ impl HtmlConverter {
     /// Args:
     ///     html: HTML string to convert.
     ///     path: Output file path.
+    ///     image_cache: Optional ImageCache to reuse and fill.
     ///
     /// Raises:
     ///     ValueError: If conversion or file writing fails.
-    fn convert_to_file(&self, html: &str, path: &str) -> PyResult<()> {
-        let pdf = self
-            .converter
-            .convert(html)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    #[pyo3(signature = (html, path, image_cache = None))]
+    fn convert_to_file(
+        &self,
+        html: &str,
+        path: &str,
+        image_cache: Option<PyRefMut<'_, ImageCache>>,
+    ) -> PyResult<()> {
+        let pdf = self.render_html(html, image_cache)?;
         std::fs::write(path, pdf).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -373,14 +460,18 @@ impl HtmlConverter {
     /// Args:
     ///     markdown: Markdown string to convert.
     ///     path: Output file path.
+    ///     image_cache: Optional ImageCache to reuse and fill.
     ///
     /// Raises:
     ///     ValueError: If conversion or file writing fails.
-    fn convert_markdown_to_file(&self, markdown: &str, path: &str) -> PyResult<()> {
-        let pdf = self
-            .converter
-            .convert_markdown(markdown)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    #[pyo3(signature = (markdown, path, image_cache = None))]
+    fn convert_markdown_to_file(
+        &self,
+        markdown: &str,
+        path: &str,
+        image_cache: Option<PyRefMut<'_, ImageCache>>,
+    ) -> PyResult<()> {
+        let pdf = self.render_markdown(markdown, image_cache)?;
         std::fs::write(path, pdf).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }
@@ -391,5 +482,6 @@ fn ironpress(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(html_to_pdf, m)?)?;
     m.add_function(wrap_pyfunction!(markdown_to_pdf, m)?)?;
     m.add_class::<HtmlConverter>()?;
+    m.add_class::<ImageCache>()?;
     Ok(())
 }
