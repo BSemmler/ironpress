@@ -8,6 +8,8 @@ require "ironpress"
 class BindingContractTest < Minitest::Test
   REPOSITORY_ROOT = Pathname(__dir__).join("../../..").expand_path
   FONT_PACK = REPOSITORY_ROOT.join("tests/fonts/IronpressCjkVertical.ttf")
+  IMAGE_HTML = '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE' \
+               'QVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==" width="50" height="50">'
 
   PORTABLE_CONVERTER_METHODS = %i[
     page_size
@@ -95,6 +97,27 @@ class BindingContractTest < Minitest::Test
     end
 
     assert_includes error.message, "cjk-jp, cjk-kr, cjk-sc, cjk-tc, or emoji"
+  end
+
+  def test_an_image_cache_leaves_the_pdf_unchanged
+    converter = Ironpress::HtmlConverter.new.compress(false)
+    images = Ironpress::ImageCache.new
+    assert_equal 0, images.size
+
+    uncached = converter.convert(IMAGE_HTML)
+
+    assert_equal uncached, converter.convert(IMAGE_HTML, image_cache: images)
+    assert_equal uncached, converter.convert(IMAGE_HTML, image_cache: images)
+    assert_equal 1, images.size
+    assert_operator images.byte_size, :>, 0
+    assert converter.convert_markdown("# Cached", image_cache: images).start_with?("%PDF")
+  end
+
+  def test_an_image_cache_rejects_invalid_arguments
+    assert_raises(ArgumentError) { Ironpress::ImageCache.new(-1) }
+    assert_raises(TypeError) do
+      Ironpress::HtmlConverter.new.convert(IMAGE_HTML, image_cache: "not a cache")
+    end
   end
 
   def test_native_file_output_writes_the_pdf
