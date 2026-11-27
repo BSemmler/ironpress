@@ -187,6 +187,28 @@ let pdf = HtmlConverter::new()
     .unwrap();
 ```
 
+### Reuse images across documents
+
+Documents rendered from one template usually repeat the same images: a
+certificate frame, a watermark, a letterhead logo. Pass one `ImageCache` to
+every conversion and later documents write those images from the cache instead
+of decoding, resampling, and recompressing them again:
+
+```rust
+use ironpress::{HtmlConverter, ImageCache};
+
+let converter = HtmlConverter::new();
+let mut images = ImageCache::new(); // 64 MiB of encoded images; see with_byte_limit
+for name in ["Ada", "Grace"] {
+    let html = format!("<img src=\"frame.png\"><h1>Certificate for {name}</h1>");
+    let pdf = converter.convert_with_image_cache(&html, &mut images).unwrap();
+}
+```
+
+An image is reused only for the same bytes at the same display size, under the
+same image options. `convert` keeps nothing between calls. A conversion borrows
+the cache mutably, so concurrent conversions each need their own cache.
+
 `RasterQuality` keeps source-image, filter, and flattened-background resolution
 in one physical-DPI policy. Its default preserves sharp source/filter output
 while using 192 DPI for flattened synthetic backgrounds; lowering one field

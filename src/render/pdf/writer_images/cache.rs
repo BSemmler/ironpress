@@ -2,9 +2,14 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
+/// SHA-256 identity of a raster asset: its bytes, layout and origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct SourceDigest([u8; 32]);
+
+/// One raster asset sampled for one display size and `image-rendering`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(in crate::render::pdf) struct LayoutImageCacheKey {
-    source: [u8; 32],
+    source: SourceDigest,
     display_width: u32,
     display_height: u32,
     rendering: crate::style::computed::ImageRendering,
@@ -40,10 +45,14 @@ impl LayoutImageCacheKey {
         }
         source.update(&image.data);
         Self {
-            source: source.finalize().into(),
+            source: SourceDigest(source.finalize().into()),
             display_width: display_width.to_bits(),
             display_height: display_height.to_bits(),
             rendering,
         }
+    }
+
+    pub(super) fn source(&self) -> SourceDigest {
+        self.source
     }
 }

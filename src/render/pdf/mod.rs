@@ -183,6 +183,7 @@ use transforms::{
     resolve_css_transform,
 };
 pub(crate) use writer::{PdfWriter, RenderOpts};
+pub use writer_images::ImageCache;
 use writer_images::PdfImageInterpolation;
 use writer_output::PagePaintStreams;
 
@@ -389,6 +390,7 @@ pub(crate) fn render_pdf_to_writer_full_opts<W: std::io::Write>(
         writer,
         opts,
         crate::security::resources::ResourceLoader::default(),
+        &mut ImageCache::with_byte_limit(0),
     )
 }
 
@@ -423,6 +425,7 @@ pub(crate) fn render_pdf_to_writer_full_opts_with_resources<W: std::io::Write>(
     writer: &mut W,
     opts: RenderOpts,
     resources: crate::security::resources::ResourceLoader,
+    images: &mut ImageCache,
 ) -> Result<(), IronpressError> {
     let PdfRenderDocument {
         pages,
@@ -431,8 +434,12 @@ pub(crate) fn render_pdf_to_writer_full_opts_with_resources<W: std::io::Write>(
         custom_fonts,
         decoration,
     } = document;
-    let mut pdf_writer = PdfWriter::with_resources(resources);
-    pdf_writer.opts = opts;
+    let mut pdf_writer = PdfWriter {
+        resources,
+        images: std::mem::take(images),
+        opts,
+        ..PdfWriter::default()
+    };
     pdf_writer.svg_defs = collect_document_svg_defs(pages);
     // `available_width` is derived per page inside the loop below, since a page
     // may carry an `@page :first` margin override that changes its content box.
@@ -882,6 +889,7 @@ pub(crate) fn render_pdf_to_writer_full_opts_with_resources<W: std::io::Write>(
         );
     }
 
+    *images = std::mem::take(&mut pdf_writer.images);
     pdf_writer.finish_to_writer(writer, &bookmarks)
 }
 

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added
+
+- `ImageCache` keeps encoded images between conversions. Pass the same cache to
+  `HtmlConverter::convert_with_image_cache` (or
+  `convert_to_writer_with_image_cache`) for every document of a batch, and an
+  image that an earlier document already embedded at the same size is written
+  from the cache. Decoding, resampling and recompressing are skipped. A
+  certificate with a 1916x1440 PNG frame renders in 3 ms instead of 72 ms, and
+  one with a 6552x3680 translucent watermark in 4 ms instead of 640 ms. The
+  cache is bounded by bytes of encoded image data (64 MiB by default,
+  `ImageCache::with_byte_limit` to change) and drops the least recently used
+  image first. `convert_markdown_with_image_cache` does the same for Markdown.
+
+### Changed
+
+- A background image repeated on several pages, or several times on one page,
+  is embedded once. Each paint used to embed and encode its own copy: a
+  frame background on three pages took three times the work and the space.
+- `convert` no longer keeps resized images between calls in a process-wide
+  cache. Use `convert_with_image_cache` to reuse resized images.
+
 ### Fixed
 
 - Greyscale and CMYK JPEGs are drawn correctly. JPEGs are embedded as they
