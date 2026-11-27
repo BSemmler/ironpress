@@ -375,6 +375,23 @@ const pdf = converter.htmlToPdf('<h1>Hello from Node.js</h1>');
 converter.free();
 ```
 
+Repeated images, such as a certificate frame, are encoded once when the same
+`ImageCache` is passed to each conversion:
+
+```javascript
+import init, { HtmlConverter, ImageCache } from 'ironpress/node';
+
+await init();
+
+const converter = new HtmlConverter();
+const images = new ImageCache();
+for (const html of documents) {
+  const pdf = converter.htmlToPdfWithImageCache(html, images);
+}
+images.free();
+converter.free();
+```
+
 `ironpress/node` locates and loads the WebAssembly binary shipped in the npm
 package. Applications do not need to resolve or read it themselves. This entry
 point uses the portable WebAssembly contract: document resources, custom fonts,

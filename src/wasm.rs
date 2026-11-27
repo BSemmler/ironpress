@@ -2,7 +2,57 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::{FontPack, FontPackKind, HtmlConverter, Margin, PageSize};
+use crate::{FontPack, FontPackKind, HtmlConverter, ImageCache, Margin, PageSize};
+
+/// Images encoded by earlier conversions, kept for later ones.
+///
+/// Pass one cache to every conversion of a batch that repeats the same images,
+/// such as a certificate frame or a watermark. A later conversion writes an
+/// image that an earlier one already encoded at the same size instead of
+/// encoding it again.
+#[wasm_bindgen(js_name = ImageCache)]
+pub struct WasmImageCache {
+    images: ImageCache,
+}
+
+#[wasm_bindgen(js_class = "ImageCache")]
+impl WasmImageCache {
+    /// Create an empty cache holding up to `byteLimit` bytes of encoded image
+    /// data (64 MiB when omitted), dropping the least recently used image
+    /// first.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        #[wasm_bindgen(js_name = byteLimit)] byte_limit: Option<f64>,
+    ) -> Result<WasmImageCache, JsError> {
+        let byte_limit = match byte_limit {
+            None => ImageCache::DEFAULT_BYTE_LIMIT,
+            Some(limit) if limit.is_finite() && limit >= 0.0 && limit.fract() == 0.0 => {
+                // Saturates: a limit beyond the address space means no limit.
+                limit as usize
+            }
+            Some(_) => {
+                return Err(JsError::new(
+                    "image cache byte limit must be a non-negative integer",
+                ));
+            }
+        };
+        Ok(Self {
+            images: ImageCache::with_byte_limit(byte_limit),
+        })
+    }
+
+    /// Number of encoded images held.
+    #[wasm_bindgen(getter)]
+    pub fn size(&self) -> usize {
+        self.images.len()
+    }
+
+    /// Bytes of encoded image data held.
+    #[wasm_bindgen(getter, js_name = byteLength)]
+    pub fn byte_length(&self) -> usize {
+        self.images.byte_len()
+    }
+}
 
 /// Reusable WebAssembly converter for browser and Node.js hosts.
 #[wasm_bindgen(js_name = HtmlConverter)]
@@ -167,6 +217,34 @@ impl WasmHtmlConverter {
     #[wasm_bindgen(js_name = markdownToPdf)]
     pub fn markdown_to_pdf(&self, markdown: &str) -> Result<js_sys::Uint8Array, JsError> {
         Self::pdf_bytes(self.converter.convert_markdown(markdown))
+    }
+
+    /// Convert HTML with this converter's settings, reusing and filling
+    /// `imageCache`.
+    #[wasm_bindgen(js_name = htmlToPdfWithImageCache)]
+    pub fn html_to_pdf_with_image_cache(
+        &self,
+        html: &str,
+        #[wasm_bindgen(js_name = imageCache)] image_cache: &mut WasmImageCache,
+    ) -> Result<js_sys::Uint8Array, JsError> {
+        Self::pdf_bytes(
+            self.converter
+                .convert_with_image_cache(html, &mut image_cache.images),
+        )
+    }
+
+    /// Convert Markdown with this converter's settings, reusing and filling
+    /// `imageCache`.
+    #[wasm_bindgen(js_name = markdownToPdfWithImageCache)]
+    pub fn markdown_to_pdf_with_image_cache(
+        &self,
+        markdown: &str,
+        #[wasm_bindgen(js_name = imageCache)] image_cache: &mut WasmImageCache,
+    ) -> Result<js_sys::Uint8Array, JsError> {
+        Self::pdf_bytes(
+            self.converter
+                .convert_markdown_with_image_cache(markdown, &mut image_cache.images),
+        )
     }
 }
 
