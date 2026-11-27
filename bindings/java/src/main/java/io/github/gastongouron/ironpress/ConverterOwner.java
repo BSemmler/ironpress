@@ -133,6 +133,25 @@ final class ConverterOwner implements AutoCloseable {
     }
   }
 
+  byte[] convert(DocumentKind kind, String source, ImageCache images) {
+    ensureOpen();
+    var imageCache = images.pointer();
+    try (var input = NativeInput.text(source, "source")) {
+      var pdf = new PointerByReference();
+      var error = new PointerByReference();
+      var status =
+          switch (kind) {
+            case HTML ->
+                api.ironpress_converter_convert_html_with_image_cache(
+                    converter, imageCache, input.bytes(), pdf, error);
+            case MARKDOWN ->
+                api.ironpress_converter_convert_markdown_with_image_cache(
+                    converter, imageCache, input.bytes(), pdf, error);
+          };
+      return NativeResult.takePdf(api, status, pdf, error);
+    }
+  }
+
   @Override
   public void close() {
     if (converter != null) {

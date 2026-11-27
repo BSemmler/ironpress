@@ -43,6 +43,21 @@ binding never downloads them.
 Use `setHeaderHtml` or `setFooterHtml` for sanitized images, tables, and styled
 markup in the page margins. The plain setters keep their existing text contract.
 
+To reuse images that every document repeats, such as a certificate frame or a
+watermark, pass one `ImageCache` to each conversion:
+
+```java
+try (var images = new ImageCache()) {
+    for (var html : documents) {
+        Files.write(output(html), converter.convertHtml(html, images));
+    }
+}
+```
+
+Later conversions write those images from the cache instead of encoding them
+again. Close the cache with try-with-resources; concurrent conversions need
+their own caches.
+
 ## Supported runtimes
 
 - Linux x86-64 with glibc 2.28 or newer

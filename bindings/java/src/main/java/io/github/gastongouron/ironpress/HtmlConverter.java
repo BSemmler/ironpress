@@ -150,6 +150,18 @@ public final class HtmlConverter implements AutoCloseable {
     return owner.convert(ConverterOwner.DocumentKind.MARKDOWN, markdown);
   }
 
+  /** Convert Java HTML text to owned PDF bytes, reusing and filling {@code images}. */
+  public byte[] convertHtml(String html, ImageCache images) {
+    return owner.convert(
+        ConverterOwner.DocumentKind.HTML, html, Objects.requireNonNull(images, "images"));
+  }
+
+  /** Convert Java Markdown text to owned PDF bytes, reusing and filling {@code images}. */
+  public byte[] convertMarkdown(String markdown, ImageCache images) {
+    return owner.convert(
+        ConverterOwner.DocumentKind.MARKDOWN, markdown, Objects.requireNonNull(images, "images"));
+  }
+
   /** Release the native converter deterministically. */
   @Override
   public void close() {

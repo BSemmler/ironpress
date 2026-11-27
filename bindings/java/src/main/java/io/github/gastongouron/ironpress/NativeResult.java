@@ -29,6 +29,23 @@ final class NativeResult {
     return owner;
   }
 
+  static Pointer takeImageCache(
+      NativeApi api, int status, PointerByReference imageCache, PointerByReference error) {
+    if (status != OK || error.getValue() != null) {
+      try {
+        ensureSuccess(api, status, error);
+      } finally {
+        releaseImageCache(api, imageCache);
+      }
+    }
+
+    var owner = imageCache.getValue();
+    if (owner == null) {
+      throw contractViolation("Native image cache allocation returned no owner.");
+    }
+    return owner;
+  }
+
   static byte[] takePdf(
       NativeApi api, int status, PointerByReference pdf, PointerByReference error) {
     try {
@@ -71,6 +88,14 @@ final class NativeResult {
     }
   }
 
+  static void closeImageCache(NativeApi api, Pointer imageCache) {
+    var owner = new PointerByReference(imageCache);
+    var status = api.ironpress_image_cache_free(owner);
+    if (status != OK || owner.getValue() != null) {
+      throw contractViolation("Native image cache release failed with status " + status + ".");
+    }
+  }
+
   private static byte[] copyBytes(NativeApi api, Pointer buffer) {
     var length = managedLength(api.ironpress_buffer_len(buffer), "PDF");
     var data = api.ironpress_buffer_data(buffer);
@@ -100,6 +125,12 @@ final class NativeResult {
   private static void releaseConverter(NativeApi api, PointerByReference owner) {
     if (owner.getValue() != null) {
       api.ironpress_converter_free(owner);
+    }
+  }
+
+  private static void releaseImageCache(NativeApi api, PointerByReference owner) {
+    if (owner.getValue() != null) {
+      api.ironpress_image_cache_free(owner);
     }
   }
 
