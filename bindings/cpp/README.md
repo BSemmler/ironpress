@@ -90,9 +90,25 @@ destroy the same owner concurrently. PDF byte views remain valid until their
 `Pdf` owner is destroyed or moved.
 
 The wrapper exposes the same portable contract as the C ABI: HTML and Markdown
-PDF bytes, reusable converters, page geometry, quality controls, sanitization,
-headers, footers, custom fonts, and optional font packs. It does not read local
+PDF bytes, reusable converters, image caches, page geometry, quality controls,
+sanitization, headers, footers, custom fonts, and optional font packs. It does not read local
 paths or enable remote resources.
+
+## Reuse images across documents
+
+Pass one `ironpress::ImageCache` to every conversion of a batch that repeats
+the same images, such as a certificate frame or a watermark. Later conversions
+write those images from the cache instead of encoding them again:
+
+```cpp
+ironpress::ImageCache images;  // 64 MiB of encoded images by default
+for (const auto& html : documents) {
+    const auto pdf = converter.convert_html(html, images);
+}
+```
+
+An image cache follows the converter's threading rule: concurrent conversions
+need their own caches.
 
 ## Build from source
 
