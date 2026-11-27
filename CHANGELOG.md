@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- Greyscale and CMYK JPEGs are drawn correctly. JPEGs are embedded as they
+  are, and every one was labelled `/DeviceRGB` whatever its component count,
+  so a viewer read a greyscale JPEG's single samples three at a time (the
+  image came out garbled, a third of its width, repeated) and a CMYK one's
+  four as three. The colour space now comes from the JPEG's frame header:
+  `/DeviceGray` for one component, `/DeviceCMYK` for four, `/DeviceRGB`
+  otherwise. Adobe CMYK JPEGs, which store inverted samples, also get
+  `/Decode [1 0 1 0 1 0 1 0]`. This applies to image XObjects and to the
+  inline images SVG rendering falls back to.
 - Words next to brackets, slashes and plus signs no longer break mid-word.
   Any word containing `(`, `)`, `[`, `]`, `{`, `}`, `/` or `+` used to be
   breakable between every character, so prose such as `(the probation

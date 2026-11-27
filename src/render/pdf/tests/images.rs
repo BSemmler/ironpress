@@ -481,6 +481,93 @@
             .expect("JPEG background should draw its source image XObject");
     }
 
+    /// A 2x2 CMYK JPEG as Photoshop and ImageMagick write it: four components and an
+    /// Adobe APP14 segment, so its samples are stored inverted.
+    const ADOBE_CMYK_JPEG_BASE64: &str = "/9j/4AAQSkZJRgABAQAAAAAAAAD/7gAOQWRvYmUAZAAAAAAC/9sAQwADAgIDAgIDAwMDBAMDBAUIBQUEBAUKBwcGCAwKDAwLCgsLDQ4SEA0OEQ4LCxAWEBETFBUVFQwPFxgWFBgSFBUU/9sAQwEDBAQFBAUJBQUJFA0LDRQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU/8AAFAgAAgACBAERAAIRAQMRAQQRAP/EABUAAQEAAAAAAAAAAAAAAAAAAAgJ/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/EABUBAQEAAAAAAAAAAAAAAAAAAAcJ/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAA4EAQACEQMRBAAAPwBEHNKpVN//2Q==";
+
+    fn grayscale_jpeg_base64() -> String {
+        use image::ImageEncoder;
+
+        let mut jpeg_bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg_bytes)
+            .write_image(&[0u8, 85, 170, 255], 2, 2, image::ExtendedColorType::L8)
+            .expect("jpeg encoding should succeed");
+        simple_base64_encode_test(&jpeg_bytes)
+    }
+
+    /// The dictionary of the one DCTDecode image XObject in `content`
+    fn dct_image_dictionary(content: &str) -> &str {
+        let filter = content
+            .find("/Filter /DCTDecode")
+            .expect("PDF should embed the JPEG with DCTDecode");
+        let start = content[..filter].rfind("<<").unwrap();
+        let end = filter + content[filter..].find(">>").unwrap();
+        &content[start..end]
+    }
+
+    fn render_img(src: &str) -> String {
+        let html = format!(r#"<img src="{src}" width="100" height="100">"#);
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        let pdf = render_pdf(&pages, PageSize::A4, Margin::default()).unwrap();
+        String::from_utf8_lossy(&pdf).into_owned()
+    }
+
+    #[test]
+    fn render_rgb_jpeg_uses_device_rgb() {
+        use image::ImageEncoder;
+
+        let mut jpeg_bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg_bytes)
+            .write_image(&[255u8, 128, 0], 1, 1, image::ExtendedColorType::Rgb8)
+            .expect("jpeg encoding should succeed");
+        let content = render_img(&format!(
+            "data:image/jpeg;base64,{}",
+            simple_base64_encode_test(&jpeg_bytes)
+        ));
+        let dictionary = dct_image_dictionary(&content);
+        assert!(dictionary.contains("/ColorSpace /DeviceRGB"), "{dictionary}");
+        assert!(!dictionary.contains("/Decode"), "{dictionary}");
+    }
+
+    #[test]
+    fn render_grayscale_jpeg_uses_device_gray() {
+        // One component per sample: read as DeviceRGB, a viewer takes three grey
+        // samples per pixel and draws the image garbled, a third of its width
+        let content = render_img(&format!("data:image/jpeg;base64,{}", grayscale_jpeg_base64()));
+        let dictionary = dct_image_dictionary(&content);
+        assert!(dictionary.contains("/ColorSpace /DeviceGray"), "{dictionary}");
+    }
+
+    #[test]
+    fn render_adobe_cmyk_jpeg_uses_inverted_device_cmyk() {
+        let content = render_img(&format!("data:image/jpeg;base64,{ADOBE_CMYK_JPEG_BASE64}"));
+        let dictionary = dct_image_dictionary(&content);
+        assert!(dictionary.contains("/ColorSpace /DeviceCMYK"), "{dictionary}");
+        assert!(dictionary.contains("/Decode [1 0 1 0 1 0 1 0]"), "{dictionary}");
+    }
+
+    #[test]
+    fn render_grayscale_jpeg_inside_svg_uses_device_gray() {
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">
+                <image href="data:image/jpeg;base64,{}" x="0" y="0" width="72" height="72"/>
+            </svg>"##,
+            grayscale_jpeg_base64()
+        );
+        // As an <img> source and inline in the HTML
+        let as_img = render_img(&svg_data_uri(&svg));
+        let dictionary = dct_image_dictionary(&as_img);
+        assert!(dictionary.contains("/ColorSpace /DeviceGray"), "{dictionary}");
+
+        let nodes = parse_html(&svg).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        let pdf = render_pdf(&pages, PageSize::A4, Margin::default()).unwrap();
+        let inline = String::from_utf8_lossy(&pdf);
+        let dictionary = dct_image_dictionary(&inline);
+        assert!(dictionary.contains("/ColorSpace /DeviceGray"), "{dictionary}");
+    }
+
     #[test]
     fn render_png_image_contains_flatedecode() {
         // Build a minimal valid PNG as base64 data URI

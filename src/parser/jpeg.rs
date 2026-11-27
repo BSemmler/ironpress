@@ -9,10 +9,63 @@ pub(crate) struct DecodedJpegImage {
 }
 
 pub(crate) fn parse_jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    parse_jpeg_frame(data).map(|frame| (frame.width, frame.height))
+}
+
+/// What a JPEG's header says about its frame, read without decoding it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JpegFrame {
+    pub width: u32,
+    pub height: u32,
+    /// Colour components per sample: 1 (grey), 3 (YCbCr/RGB) or 4 (CMYK/YCCK)
+    pub components: u8,
+    /// An Adobe APP14 segment came before the frame. Adobe writes four-component
+    /// JPEGs with inverted samples, which PDF readers undo with a `/Decode` array.
+    pub adobe: bool,
+}
+
+/// How a viewer reads a JPEG embedded as-is with `/DCTDecode`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JpegPdfColor {
+    pub color_space: &'static str,
+    /// A `/Decode` array, for inverted Adobe CMYK
+    pub decode: Option<&'static str>,
+}
+
+impl JpegPdfColor {
+    const RGB: Self = Self {
+        color_space: "/DeviceRGB",
+        decode: None,
+    };
+}
+
+/// The PDF colour space for embedding `data` unchanged: the colour space has to
+/// match the JPEG's component count, or a viewer reads its samples misaligned
+/// (a greyscale JPEG labelled DeviceRGB is drawn garbled, a third of its width).
+pub(crate) fn jpeg_pdf_color(data: &[u8]) -> JpegPdfColor {
+    match parse_jpeg_frame(data) {
+        Some(JpegFrame { components: 1, .. }) => JpegPdfColor {
+            color_space: "/DeviceGray",
+            decode: None,
+        },
+        Some(JpegFrame {
+            components: 4,
+            adobe,
+            ..
+        }) => JpegPdfColor {
+            color_space: "/DeviceCMYK",
+            decode: adobe.then_some("[1 0 1 0 1 0 1 0]"),
+        },
+        _ => JpegPdfColor::RGB,
+    }
+}
+
+pub(crate) fn parse_jpeg_frame(data: &[u8]) -> Option<JpegFrame> {
     if data.len() < 4 || data.first().copied() != Some(0xFF) || data.get(1).copied() != Some(0xD8) {
         return None;
     }
 
+    let mut adobe = false;
     let mut pos = 2usize;
     while pos + 3 < data.len() {
         while pos < data.len() && data[pos] == 0xFF {
@@ -27,6 +80,11 @@ pub(crate) fn parse_jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
         let length = u16::from_be_bytes([*data.get(pos)?, *data.get(pos + 1)?]) as usize;
         if length < 2 || pos + length > data.len() {
             return None;
+        }
+
+        // APP14, identified by "Adobe"
+        if marker == 0xEE && data.get(pos + 2..pos + 7) == Some(b"Adobe".as_slice()) {
+            adobe = true;
         }
 
         if matches!(
@@ -52,7 +110,14 @@ pub(crate) fn parse_jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
             if width == 0 || height == 0 {
                 return None;
             }
-            return Some((width, height));
+            // A truncated frame header still has its size; its components default to 3
+            let components = if length >= 8 { *data.get(pos + 7)? } else { 3 };
+            return Some(JpegFrame {
+                width,
+                height,
+                components,
+                adobe,
+            });
         }
 
         pos += length;
@@ -210,6 +275,77 @@ mod tests {
             "grayscale pixel should expand to near-equal R/G/B values, got {:?}",
             decoded.rgb_data
         );
+    }
+
+    /// SOI, an optional Adobe APP14 segment, then a SOF0 frame header with
+    /// `components` components
+    fn frame_header(components: u8, adobe: bool) -> Vec<u8> {
+        let mut data = vec![0xFF, 0xD8];
+        if adobe {
+            data.extend_from_slice(&[
+                0xFF, 0xEE, 0x00, 0x0E, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
+                0x00, 0x02,
+            ]);
+        }
+        let length = 8 + 3 * u16::from(components);
+        data.extend_from_slice(&[0xFF, 0xC0]);
+        data.extend_from_slice(&length.to_be_bytes());
+        data.extend_from_slice(&[0x08, 0x00, 0x02, 0x00, 0x03, components]);
+        for id in 1..=components {
+            data.extend_from_slice(&[id, 0x11, 0x00]);
+        }
+        data
+    }
+
+    #[test]
+    fn parse_jpeg_frame_reads_components_and_adobe_segment() {
+        assert_eq!(
+            parse_jpeg_frame(&frame_header(1, false)),
+            Some(JpegFrame {
+                width: 3,
+                height: 2,
+                components: 1,
+                adobe: false
+            })
+        );
+        let cmyk = parse_jpeg_frame(&frame_header(4, true)).unwrap();
+        assert_eq!((cmyk.components, cmyk.adobe), (4, true));
+    }
+
+    #[test]
+    fn jpeg_pdf_color_matches_the_component_count() {
+        assert_eq!(
+            jpeg_pdf_color(&frame_header(1, false)).color_space,
+            "/DeviceGray"
+        );
+        assert_eq!(jpeg_pdf_color(&frame_header(3, false)), JpegPdfColor::RGB);
+        assert_eq!(
+            jpeg_pdf_color(&frame_header(4, false)),
+            JpegPdfColor {
+                color_space: "/DeviceCMYK",
+                decode: None
+            }
+        );
+        assert_eq!(
+            jpeg_pdf_color(&frame_header(4, true)),
+            JpegPdfColor {
+                color_space: "/DeviceCMYK",
+                decode: Some("[1 0 1 0 1 0 1 0]")
+            }
+        );
+        // An Adobe segment only inverts CMYK
+        assert_eq!(jpeg_pdf_color(&frame_header(3, true)), JpegPdfColor::RGB);
+        // What can't be parsed keeps the old behaviour
+        assert_eq!(jpeg_pdf_color(b"not a jpeg"), JpegPdfColor::RGB);
+    }
+
+    #[test]
+    fn jpeg_pdf_color_of_an_encoded_grayscale_jpeg() {
+        let mut encoded = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut encoded)
+            .write_image(&[200u8], 1, 1, image::ExtendedColorType::L8)
+            .expect("jpeg encoding should succeed");
+        assert_eq!(jpeg_pdf_color(&encoded).color_space, "/DeviceGray");
     }
 
     #[test]

@@ -61,8 +61,14 @@ impl PdfWriter {
         let interpolation = interpolation.pdf_dictionary_entry();
         let header = match format {
             ImageFormat::Jpeg => {
+                let color = crate::parser::jpeg::jpeg_pdf_color(data);
                 format!(
-                    "{id} 0 obj\n<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode{interpolation} /Length {len} >>\nstream\n",
+                    "{id} 0 obj\n<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace {color_space}{decode} /BitsPerComponent 8 /Filter /DCTDecode{interpolation} /Length {len} >>\nstream\n",
+                    color_space = color.color_space,
+                    decode = color
+                        .decode
+                        .map(|d| format!(" /Decode {d}"))
+                        .unwrap_or_default(),
                     len = data.len(),
                 )
             }

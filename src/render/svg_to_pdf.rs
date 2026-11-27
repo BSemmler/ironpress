@@ -2084,8 +2084,14 @@ fn emit_inline_image(
             ));
         }
         RasterImageKind::Jpeg => {
+            let color = crate::parser::jpeg::jpeg_pdf_color(data);
+            let decode = color
+                .decode
+                .map(|d| format!("/D {d}\n"))
+                .unwrap_or_default();
             out.push_str(&format!(
-                "/W {source_width}\n/H {source_height}\n/CS /DeviceRGB\n/BPC 8\n/F [/ASCIIHexDecode /DCTDecode]\n"
+                "/W {source_width}\n/H {source_height}\n/CS {color_space}\n{decode}/BPC 8\n/F [/ASCIIHexDecode /DCTDecode]\n",
+                color_space = color.color_space,
             ));
         }
     }
@@ -3342,6 +3348,44 @@ mod tests {
             Some((30.0, 20.0)),
             "image sink should receive the displayed raster size in PDF points"
         );
+    }
+
+    /// Without an image sink the JPEG is drawn as an inline image, whose colour
+    /// space must match its component count like an XObject's
+    #[test]
+    fn render_raster_image_inline_jpeg_uses_its_color_space() {
+        // SOI, then a SOF0 frame header for a 1x1 image with `components` components
+        fn jpeg(components: u8, adobe: bool) -> Vec<u8> {
+            let mut data = vec![0xFF, 0xD8];
+            if adobe {
+                data.extend_from_slice(&[
+                    0xFF, 0xEE, 0x00, 0x0E, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00,
+                    0x00, 0x00, 0x02,
+                ]);
+            }
+            data.extend_from_slice(&[0xFF, 0xC0, 0x00, 8 + 3 * components, 0x08, 0x00, 0x01]);
+            data.extend_from_slice(&[0x00, 0x01, components]);
+            for id in 1..=components {
+                data.extend_from_slice(&[id, 0x11, 0x00]);
+            }
+            data
+        }
+        let inline = |data: &[u8]| {
+            let mut out = String::new();
+            render_raster_image(
+                data,
+                1,
+                1,
+                RasterImageKind::Jpeg,
+                SvgPlacementRequest::from_rect(0.0, 0.0, 10.0, 10.0, SvgPreserveAspectRatio::None),
+                &mut out,
+            );
+            out
+        };
+
+        assert!(inline(&jpeg(1, false)).contains("/CS /DeviceGray\n/BPC 8\n"));
+        assert!(inline(&jpeg(3, false)).contains("/CS /DeviceRGB\n/BPC 8\n"));
+        assert!(inline(&jpeg(4, true)).contains("/CS /DeviceCMYK\n/D [1 0 1 0 1 0 1 0]\n/BPC 8\n"));
     }
 
     #[test]
